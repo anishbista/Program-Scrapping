@@ -142,18 +142,18 @@ class ApplyBoardScraper(WebScraper):
         super().__init__("https://www.applyboard.com")
         self.countries = {}
         self.driver = None
-
+    
     def setup_driver(self):
         """Setup Selenium WebDriver (tries Firefox first, then Chrome)."""
         if self.driver:
             return self.driver
-
+        
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            options.add_argument("--headless")  # Run in background
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument('--headless')  # Run in background
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
             self.driver = webdriver.Firefox(options=options)
             print("✓ Firefox WebDriver ready")
             return self.driver
@@ -162,9 +162,9 @@ class ApplyBoardScraper(WebScraper):
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                options.add_argument("--headless")
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
+                options.add_argument('--headless')
+                options.add_argument('--no-sandbox')
+                options.add_argument('--disable-dev-shm-usage')
                 self.driver = webdriver.Chrome(options=options)
                 print("✓ Chrome WebDriver ready")
                 return self.driver
@@ -172,33 +172,29 @@ class ApplyBoardScraper(WebScraper):
                 print(f"❌ Chrome also not available: {e2}")
                 print("\n⚠️  Please install either Firefox or Chrome browser")
                 return None
-
-    def fetch_page_with_js(
-        self, url: str, wait_for_selector: str = None, wait_time: int = 10
-    ) -> BeautifulSoup:
+    
+    def fetch_page_with_js(self, url: str, wait_for_selector: str = None, wait_time: int = 10) -> BeautifulSoup:
         """
         Fetch a page that requires JavaScript using Selenium.
-
+        
         Args:
             url: URL to fetch
             wait_for_selector: CSS selector to wait for before returning
             wait_time: Maximum time to wait (seconds)
-
+            
         Returns:
             BeautifulSoup object of the loaded page
         """
         driver = self.setup_driver()
         if not driver:
             return None
-
+        
         try:
             print(f"🌐 Loading page with JavaScript support...")
             driver.get(url)
-
+            
             if wait_for_selector:
-                print(
-                    f"⏳ Waiting for content to load (selector: {wait_for_selector})..."
-                )
+                print(f"⏳ Waiting for content to load (selector: {wait_for_selector})...")
                 WebDriverWait(driver, wait_time).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, wait_for_selector))
                 )
@@ -212,19 +208,19 @@ class ApplyBoardScraper(WebScraper):
                     )
                 except TimeoutException:
                     print("⚠️  Timeout waiting for articles, continuing anyway...")
-
+            
             # Additional wait for dynamic content
             time.sleep(2)
-
+            
             page_source = driver.page_source
-            soup = BeautifulSoup(page_source, "lxml")
+            soup = BeautifulSoup(page_source, 'lxml')
             print("✓ Page loaded successfully")
             return soup
-
+            
         except Exception as e:
             print(f"Error loading page with JavaScript: {e}")
             return None
-
+    
     def close_driver(self):
         """Close the Selenium WebDriver."""
         if self.driver:

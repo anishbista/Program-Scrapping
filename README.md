@@ -1,8 +1,24 @@
-# Web Scraper Project
+# ApplyBoard Web Scraper
 
-A Python-based web scraping tool that extracts data from websites and stores it in JSON format.
+A Python-based web scraping tool that extracts study abroad program data from ApplyBoard.com and stores it in JSON format.
 
-## Setup
+## 🚀 Features
+
+- ✅ **Interactive Country Selection** - Choose from 6 study destinations
+- ✅ **Flexible Data Collection** - Scrape specific number of programs or all available
+- ✅ **Automatic Pagination** - Handles multiple pages automatically (48 items per page)
+- ✅ **Comprehensive Data** - Extracts 15+ data points per program
+- ✅ **JSON Export** - Clean, structured output with metadata
+- ✅ **Progress Tracking** - Real-time updates during scraping
+- ✅ **Error Handling** - Graceful handling of network issues
+
+## 📋 Prerequisites
+
+- Python 3.7+
+- Virtual environment (venv)
+- Internet connection
+
+## 🔧 Setup
 
 1. **Activate virtual environment:**
    ```bash
@@ -14,98 +30,86 @@ A Python-based web scraping tool that extracts data from websites and stores it 
    pip install -r requirements.txt
    ```
 
-## Usage
+## 🎯 Usage
 
-### Basic Usage
-
-Edit `scraper.py` and replace the URL with your target website:
-
-```python
-scraper = WebScraper("https://your-target-site.com")
-scraper.run()
-```
-
-Run the scraper:
+Simply run:
 ```bash
 python scraper.py
 ```
 
-### Custom Scraping
+The scraper will guide you through:
+1. Selecting a study destination country
+2. Choosing how many programs to scrape
+3. Automatic data extraction and JSON export
 
-For custom scraping logic, modify the `scrape_data()` method or create custom extraction:
+For detailed usage instructions, see [USAGE.md](USAGE.md)
 
-```python
-from scraper import WebScraper
+## 📊 Data Collected
 
-# Initialize scraper
-scraper = WebScraper("https://example.com")
+Each program includes:
+- School name and URL
+- Program name and URL
+- Degree type
+- Location and campus city
+- Tuition fees
+- Application fee
+- Program duration
+- Success chance rating
+- Available intake dates
+- Special features (scholarships, fast acceptance, etc.)
 
-# Fetch page
-soup = scraper.fetch_page()
+## 📁 Output
 
-# Custom extraction
-if soup:
-    data = []
-    
-    # Find elements using CSS selectors or find methods
-    items = soup.select('.your-selector')
-    
-    for item in items:
-        data_item = {
-            'field1': item.select_one('.class-name').get_text(strip=True),
-            'field2': item.find('tag')['attribute'],
-            # Add more fields as needed
-        }
-        data.append(data_item)
-    
-    # Save to JSON
-    scraper.save_to_json(data, 'output.json')
+Data is saved as JSON files with naming pattern:
+```
+{country}_programs_{timestamp}.json
 ```
 
-## Output Format
+Example: `germany_programs_20260115_143052.json`
 
-The scraper saves data in JSON format with metadata:
+## 🌍 Supported Countries
 
-```json
-{
-  "scraped_at": "2026-01-15T12:00:00",
-  "source_url": "https://example.com",
-  "total_items": 10,
-  "data": [
-    {
-      "title": "Item 1",
-      "link": "https://example.com/item1",
-      "description": "Description here"
-    }
-  ]
-}
+- Australia
+- Canada
+- Ireland
+- Germany
+- United Kingdom
+- United States
+
+## 📦 Dependencies
+
+- `requests` - HTTP requests
+- `beautifulsoup4` - HTML parsing
+- `lxml` - Fast XML/HTML parser
+
+## 💡 Example
+
+```bash
+$ python scraper.py
+
+# Select country: Germany
+# Total available: 830 programs
+# Scrape: 50 programs
+# Output: germany_programs_20260115_143052.json
 ```
 
-## Tips
+## ⚙️ Technical Details
 
-1. **Finding Selectors:**
-   - Right-click element in browser → Inspect
-   - Use browser DevTools to find CSS selectors
-   - Common selectors: `.class`, `#id`, `tag`, `[attribute]`
+- Automatically switches to 48 items per page for efficiency
+- Handles multi-page scraping automatically
+- Robust error handling for network issues
+- Clean, modular code architecture
 
-2. **Respectful Scraping:**
-   - Check the website's `robots.txt`
-   - Add delays between requests if scraping multiple pages
-   - Respect rate limits
+## 📝 Notes
 
-3. **Error Handling:**
-   - The scraper includes timeout and error handling
-   - Check console output for error messages
+- Scraping large datasets (500+ programs) may take several minutes
+- The scraper respects timeouts to avoid overloading the server
+- All data is scraped from publicly available pages
 
-## Common Selectors
+## 🤝 Contributing
 
-- `soup.find('tag')` - Find first tag
-- `soup.find_all('tag')` - Find all tags
-- `soup.select('.class')` - CSS selector
-- `soup.select_one('#id')` - Single element by ID
-- `element.get_text(strip=True)` - Get text content
-- `element['attribute']` - Get attribute value
+Feel free to submit issues or pull requests to improve the scraper.
 
-## Examples
+## 📄 License
 
-See `examples/` folder for specific scraping examples (to be added).
+This project is for educational purposes.
