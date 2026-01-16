@@ -142,6 +142,7 @@ class ApplyBoardScraper(WebScraper):
         super().__init__("https://www.applyboard.com")
         self.countries = {}
         self.driver = None
+        self.is_logged_in = False
 
     def setup_driver(self):
         """Setup Selenium WebDriver (tries Firefox first, then Chrome)."""
@@ -151,7 +152,7 @@ class ApplyBoardScraper(WebScraper):
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            # options.add_argument("--headless")  # Run in background
+            options.add_argument("--headless")  # Run in background
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             self.driver = webdriver.Firefox(options=options)
@@ -162,7 +163,7 @@ class ApplyBoardScraper(WebScraper):
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                # options.add_argument("--headless")
+                options.add_argument("--headless")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 self.driver = webdriver.Chrome(options=options)
@@ -172,6 +173,97 @@ class ApplyBoardScraper(WebScraper):
                 print(f"❌ Chrome also not available: {e2}")
                 print("\n⚠️  Please install either Firefox or Chrome browser")
                 return None
+
+    def login(self, email: str = None, password: str = None) -> bool:
+        """
+        Log in to ApplyBoard using provided credentials.
+
+        Args:
+            email: User's email (will prompt if not provided)
+            password: User's password (will prompt if not provided)
+
+        Returns:
+            True if login successful, False otherwise
+        """
+        driver = self.setup_driver()
+        if not driver:
+            return False
+
+        if not email:
+            email = input("📧 Enter your ApplyBoard email: ").strip()
+        if not password:
+            import getpass
+
+            password = getpass.getpass("🔒 Enter your password: ").strip()
+
+        try:
+            print("\n🔐 Logging in to ApplyBoard...")
+            login_url = "https://accounts.applyboard.com/"
+            driver.get(login_url)
+
+            print("⏳ Waiting for login page to load...")
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.ID, "okta-sign-in"))
+            )
+
+            print("📝 Entering credentials...")
+            email_field = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.NAME, "identifier"))
+            )
+            email_field.clear()
+            email_field.send_keys(email)
+
+            password_field = driver.find_element(By.NAME, "credentials.passcode")
+            password_field.clear()
+            password_field.send_keys(password)
+
+            print("🚀 Submitting login form...")
+            login_button = driver.find_element(
+                By.CSS_SELECTOR, "input[type='submit'][value='Log In']"
+            )
+            login_button.click()
+
+            print("⏳ Waiting for authentication...")
+            time.sleep(3)
+            current_url = driver.current_url
+
+            if (
+                "accounts.applyboard.com" in current_url
+                and "error" not in current_url.lower()
+            ):
+                try:
+                    error_element = driver.find_element(
+                        By.CSS_SELECTOR, ".o-form-error-container"
+                    )
+                    if error_element.text:
+                        print(f"❌ Login failed: {error_element.text}")
+                        return False
+                except:
+                    pass
+                time.sleep(5)
+                current_url = driver.current_url
+
+            if (
+                "accounts.applyboard.com" not in current_url
+                or "home" in current_url.lower()
+            ):
+                print("✅ Login successful!")
+                self.is_logged_in = True
+                print("🏠 Navigating to homepage...")
+                driver.get("https://www.applyboard.com")
+                time.sleep(2)
+                return True
+            else:
+                print("❌ Login may have failed. Please check your credentials.")
+                print(f"Current URL: {current_url}")
+                return False
+
+        except TimeoutException as e:
+            print(f"❌ Timeout during login: {e}")
+            return False
+        except Exception as e:
+            print(f"❌ Error during login: {e}")
+            return False
 
     def fetch_page_with_js(
         self, url: str, wait_for_selector: str = None, wait_time: int = 10
@@ -665,6 +757,21 @@ class ApplyBoardScraper(WebScraper):
 if __name__ == "__main__":
     # Create ApplyBoard scraper
     scraper = ApplyBoardScraper()
+    # Step 0: Login
+    print("=" * 50)
+    print("🔐 APPLYBOARD LOGIN")
+    print("=" * 50)
+
+    login_choice = input("\nDo you want to login? (y/n): ").strip().lower()
+
+    if login_choice == "y":
+        if not scraper.login():
+            print("\n❌ Login failed. Continuing without authentication...")
+            print("Note: Some features may be limited without login.\n")
+            time.sleep(2)
+    else:
+        print("\n⚠️  Continuing without login. Some features may be limited.\n")
+        time.sleep(1)
 
     # Step 1: Get study destinations
     countries = scraper.get_study_destinations()
