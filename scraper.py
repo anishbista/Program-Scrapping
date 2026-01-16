@@ -152,7 +152,7 @@ class ApplyBoardScraper(WebScraper):
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            options.add_argument("--headless")  # Run in background
+            # options.add_argument("--headless")  # Run in background
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             self.driver = webdriver.Firefox(options=options)
@@ -163,7 +163,7 @@ class ApplyBoardScraper(WebScraper):
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                options.add_argument("--headless")
+                # options.add_argument("--headless")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 self.driver = webdriver.Chrome(options=options)
@@ -468,37 +468,56 @@ class ApplyBoardScraper(WebScraper):
             print(f"Could not determine total items: {e}")
         return 0
 
-    def scrape_program_card(self, article) -> Dict[str, Any]:
+    def extract_program_url_from_card(self, article) -> str:
         """
-        Extract data from a single program card by visiting its detail page.
-        """
-        program = {}
+        Extract just the program URL from a listing card.
 
+        Args:
+            article: BeautifulSoup element of the program card
+
+        Returns:
+            Program detail page URL
+        """
         # Find the div with class 'css-0' and then the <a> inside it
         div = article.find("div", class_="css-0")
         detail_link = None
         if div:
             detail_link = div.find("a", class_="css-cxyr4a", href=True)
         if not detail_link or not detail_link["href"]:
-            print("No detail link found in card.")
-            return {}
+            return None
 
         detail_url = detail_link["href"]
         if detail_url.startswith("/"):
             detail_url = f"https://www.applyboard.com{detail_url}"
-        # Wait a bit before loading the detail page (to avoid rate limiting and ensure load)
+
+        return detail_url
+
+    def scrape_program_detail_from_url(self, url: str) -> Dict[str, Any]:
+        """
+        Visit a program detail page and extract all data.
+
+        Args:
+            url: Program detail page URL
+
+        Returns:
+            Dictionary containing program data
+        """
+        program = {}
+
+        # Wait a bit before loading the detail page (to avoid rate limiting)
         time.sleep(2)
 
         # Visit detail page with Selenium
-        detail_soup = self.fetch_detail_page_with_js(detail_url)
+        detail_soup = self.fetch_detail_page_with_js(url)
         if not detail_soup:
-            print(f"Failed to load detail page: {detail_url}")
+            print(f"Failed to load detail page: {url}")
             return {}
+
         # Extract all required fields from detail page
         program.update(self.extract_program_detail(detail_soup))
 
         # Add program URL for reference
-        program["program_url"] = detail_url
+        program["program_url"] = url
 
         return program
 
@@ -511,11 +530,6 @@ class ApplyBoardScraper(WebScraper):
             driver.get(url)
             # Try to wait for a unique element that always appears on the detail page
             try:
-                # WebDriverWait(driver, 20).until(
-                #     EC.presence_of_element_located(
-                #         (By.CSS_SELECTOR, "div.MuiPaper-root")
-                #     )
-                # )
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located(
                         (By.CSS_SELECTOR, "div.MuiPaper-root")
@@ -535,6 +549,51 @@ class ApplyBoardScraper(WebScraper):
             except Exception:
                 pass  # No show more button
 
+            # Wait for Program Intakes section to be present
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//p[text()='Program Intakes']")
+                    )
+                )
+                print("   ✓ Program Intakes section found")
+            except TimeoutException:
+                print("   ⚠️  Program Intakes section not found")
+
+            # Wait a bit for the page to stabilize
+            time.sleep(2)
+
+            # Expand all program intake sections
+            try:
+                # Find all expand buttons for program intakes (aria-label="show more")
+                expand_buttons = driver.find_elements(
+                    By.CSS_SELECTOR, "button[aria-label='show more']"
+                )
+                print(f"   Found {len(expand_buttons)} intake sections to expand...")
+
+                expanded_count = 0
+                for button in expand_buttons:
+                    try:
+                        # Check if button is not already expanded
+                        is_expanded = button.get_attribute("aria-expanded")
+                        if is_expanded == "false":
+                            # Scroll to button to make sure it's visible
+                            driver.execute_script(
+                                "arguments[0].scrollIntoView(true);", button
+                            )
+                            time.sleep(0.3)
+                            # Click the button
+                            driver.execute_script("arguments[0].click();", button)
+                            expanded_count += 1
+                            time.sleep(0.5)  # Small delay between clicks
+                    except Exception as e:
+                        print(f"   Could not click expand button: {e}")
+                        continue
+
+                print(f"   ✓ Expanded {expanded_count} intake sections")
+            except Exception as e:
+                print(f"   ⚠️  Could not expand intake sections: {e}")
+
             # Wait for dynamic content to expand
             time.sleep(2)
             return BeautifulSoup(driver.page_source, "lxml")
@@ -550,43 +609,130 @@ class ApplyBoardScraper(WebScraper):
 
         # Program Summary
         summary = ""
-        about_div = soup.find("div", class_="cds-temp__aboutProgram")
-        if about_div:
-            p_tags = about_div.find_all("p")
-            summary = " ".join(p.get_text(" ", strip=True) for p in p_tags)
+        # Look for the section with "Program Summary" heading
+        program_summary_heading = soup.find(
+            "p", class_="MuiTypography-root", string="Program Summary"
+        )
+        if program_summary_heading:
+            # Find the next MuiCard that contains the summary text
+            summary_card = program_summary_heading.find_next(
+                "div", class_="MuiCard-root"
+            )
+            if summary_card:
+                # Get all paragraph tags within this card
+                p_tags = summary_card.find_all("p")
+                summary = " ".join(p.get_text(" ", strip=True) for p in p_tags)
+
+        # Alternative: try the old class name as fallback
+        if not summary:
+            about_div = soup.find("div", class_="cds-temp__aboutProgram")
+            if about_div:
+                p_tags = about_div.find_all("p")
+                summary = " ".join(p.get_text(" ", strip=True) for p in p_tags)
         data["program_summary"] = summary
 
         # Program Info (Level, Length, Fees, etc.)
         info = {}
-        cost_and_duration_section = soup.find("h3", string="Cost and Duration")
-        if cost_and_duration_section:
-            section_div = cost_and_duration_section.find_parent("section")
-            if section_div:
-                for item in section_div.find_all("div", class_="css-1pjzxzh"):
-                    label_div = item.find("div", class_="css-1uo86s9")
-                    value_div = item.find("div", class_="css-1a5xebh")
-                    if label_div and value_div:
-                        label = label_div.get_text(strip=True)
-                        value = value_div.get_text(strip=True)
-                        info[label] = value
+
+        # Look for program info containers with data-testid attributes
+        info_containers = soup.find_all(
+            "div",
+            {"data-testid": lambda x: x and x.startswith("program-info-container-")},
+        )
+        if info_containers:
+            for container in info_containers:
+                # Get all paragraph tags in this container
+                p_tags = container.find_all("p", class_="MuiTypography-root")
+                if len(p_tags) >= 2:
+                    # First p tag is the value, second is the label
+                    value = p_tags[0].get_text(strip=True)
+                    label = p_tags[1].get_text(strip=True)
+                    info[label] = value
+
+        # Fallback: try the old structure
+        if not info:
+            cost_and_duration_section = soup.find("h3", string="Cost and Duration")
+            if cost_and_duration_section:
+                section_div = cost_and_duration_section.find_parent("section")
+                if section_div:
+                    for item in section_div.find_all("div", class_="css-1pjzxzh"):
+                        label_div = item.find("div", class_="css-1uo86s9")
+                        value_div = item.find("div", class_="css-1a5xebh")
+                        if label_div and value_div:
+                            label = label_div.get_text(strip=True)
+                            value = value_div.get_text(strip=True)
+                            info[label] = value
+
         data["program_info"] = info
 
-        # Program Intakes
+        # Program Intakes - Extract detailed information
         intakes = []
         intakes_section = soup.find("p", string="Program Intakes")
         if intakes_section:
-            intakes_box = intakes_section.find_parent("div")
-            if intakes_box:
-                for intake_div in intakes_box.find_all(
-                    "div", class_="MuiBox-root", recursive=True
-                ):
-                    date_p = intake_div.find(
-                        "p",
-                        class_="MuiTypography-root",
-                        style=lambda x: x and "overflow" in x,
+            # Find all intake containers (each with status, month/year, and details)
+            intake_containers = intakes_section.find_parent("div").find_all(
+                "div",
+                class_=lambda x: x and "css-19r1dcd" in x if x else False,
+                recursive=False,
+            )
+
+            for container in intake_containers:
+                intake_info = {}
+
+                # Get status (Open/Likely open)
+                status_chip = container.find("div", class_="MuiChip-root")
+                if status_chip:
+                    status_p = status_chip.find("p", class_="MuiTypography-root")
+                    if status_p:
+                        intake_info["status"] = status_p.get_text(strip=True)
+
+                # Get month and year (e.g., "Mar 2026")
+                month_year = container.find("p", attrs={"ml": "1"})
+                if not month_year:
+                    # Try alternative selector
+                    month_year = container.find("p", class_="MuiTypography-root fHlKOe")
+                if month_year:
+                    intake_info["intake_date"] = month_year.get_text(strip=True)
+
+                # Get open date and submission deadline from collapsed section
+                collapse_section = container.find("div", class_="MuiCollapse-root")
+                if collapse_section:
+                    # Find all paragraphs in the collapse section
+                    all_p_tags = collapse_section.find_all(
+                        "p", class_="MuiTypography-root"
                     )
-                    if date_p:
-                        intakes.append(date_p.get_text(strip=True))
+
+                    # Look for "Open date" and "Submission deadline" labels
+                    i = 0
+                    while i < len(all_p_tags):
+                        text = all_p_tags[i].get_text(strip=True)
+
+                        if "Open date" in text:
+                            # The next p tag should contain the value
+                            if i + 1 < len(all_p_tags):
+                                next_text = all_p_tags[i + 1].get_text(strip=True)
+                                # Skip if it's another label
+                                if "Submission deadline" not in next_text:
+                                    intake_info["open_date"] = next_text
+                                    i += 1  # Skip the value tag
+                        elif "Submission deadline" in text:
+                            # The next p tag should contain the value
+                            if i + 1 < len(all_p_tags):
+                                next_text = all_p_tags[i + 1].get_text(strip=True)
+                                # Make sure it's not another label
+                                if not any(
+                                    keyword in next_text
+                                    for keyword in ["Open date", "Submission"]
+                                ):
+                                    intake_info["submission_deadline"] = next_text
+                                    i += 1  # Skip the value tag
+
+                        i += 1
+
+                # Only add if we got some data
+                if intake_info:
+                    intakes.append(intake_info)
+
         data["program_intakes"] = intakes
 
         # Residence Permit for Job Seekers
@@ -645,20 +791,20 @@ class ApplyBoardScraper(WebScraper):
 
         return data
 
-    def scrape_programs_page(
+    def collect_program_urls(
         self, programs_url: str, max_items: int = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[str]:
         """
-        Scrape program data from the programs listing page.
+        Collect program URLs from the listing pages (without visiting detail pages).
 
         Args:
             programs_url: URL of the programs page
-            max_items: Maximum number of items to scrape (None for all)
+            max_items: Maximum number of URLs to collect (None to ask user)
 
         Returns:
-            List of program data dictionaries
+            List of program URLs
         """
-        print(f"\nFetching programs page: {programs_url}")
+        print(f"\n🔍 Collecting program URLs from: {programs_url}")
 
         # Modify URL to show 48 items per page
         if "?" in programs_url:
@@ -705,33 +851,30 @@ class ApplyBoardScraper(WebScraper):
                     print("\n\n👋 Exiting...")
                     return []
 
-        print(f"🎯 Will scrape {max_items} programs")
+        print(f"🎯 Will collect {max_items} program URLs")
         print("=" * 50 + "\n")
 
-        all_programs = []
+        all_urls = []
         page_num = 1
-        items_per_page = 48
 
-        while len(all_programs) < max_items:
-            print(f"📄 Scraping page {page_num}...")
+        while len(all_urls) < max_items:
+            print(f"📄 Collecting URLs from page {page_num}...")
 
             # Parse current page
             articles = soup.find_all("article", class_="css-1v3njm")
-            print(f"   Found {len(articles)} programs on this page")
+            print(f"   Found {len(articles)} program cards on this page")
 
             for article in articles:
-                if len(all_programs) >= max_items:
+                if len(all_urls) >= max_items:
                     break
 
-                program = self.scrape_program_card(article)
-                if program:
-                    all_programs.append(program)
-                    print(
-                        f"   ✓ Scraped: {program.get('program_name', 'Unknown')[:60]}..."
-                    )
+                url = self.extract_program_url_from_card(article)
+                if url:
+                    all_urls.append(url)
+                    print(f"   ✓ Collected URL #{len(all_urls)}")
 
             # Check if we need to fetch next page
-            if len(all_programs) >= max_items or len(all_programs) >= total_items:
+            if len(all_urls) >= max_items or len(all_urls) >= total_items:
                 break
 
             # Build next page URL
@@ -749,7 +892,49 @@ class ApplyBoardScraper(WebScraper):
             if not soup:
                 break
 
-        print(f"\n✅ Total programs scraped: {len(all_programs)}")
+        print(f"\n✅ Total program URLs collected: {len(all_urls)}")
+        return all_urls
+
+    def scrape_programs_from_urls(
+        self, program_urls: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Scrape detailed program data by visiting each program URL.
+
+        Args:
+            program_urls: List of program detail page URLs
+
+        Returns:
+            List of program data dictionaries
+        """
+        print(f"\n📚 Starting detailed scraping of {len(program_urls)} programs...")
+        print("=" * 50 + "\n")
+
+        all_programs = []
+
+        for idx, url in enumerate(program_urls, 1):
+            print(f"📖 Scraping program {idx}/{len(program_urls)}...")
+            print(f"   URL: {url}")
+
+            program = self.scrape_program_detail_from_url(url)
+            if program:
+                all_programs.append(program)
+                # Show a preview of what was scraped
+                program_name = program.get("university_info", {}).get(
+                    "university_name", "Unknown"
+                )
+                print(f"   ✓ Scraped: {program_name}")
+            else:
+                print(f"   ✗ Failed to scrape this program")
+
+            # Show progress
+            print(
+                f"   Progress: {len(all_programs)}/{len(program_urls)} programs completed\n"
+            )
+
+        print(
+            f"\n✅ Total programs successfully scraped: {len(all_programs)}/{len(program_urls)}"
+        )
         return all_programs
 
 
@@ -757,10 +942,44 @@ class ApplyBoardScraper(WebScraper):
 if __name__ == "__main__":
     # Create ApplyBoard scraper
     scraper = ApplyBoardScraper()
-    # Step 0: Login
-    print("=" * 50)
+
+    # Step 1: Get study destinations
+    countries = scraper.get_study_destinations()
+
+    if not countries:
+        print("❌ Could not fetch study destinations")
+        scraper.close_driver()
+        exit(1)
+
+    # Step 2: Display menu and get user selection
+    selected_country, country_url = scraper.display_country_menu()
+
+    if not country_url:
+        print("No country selected. Exiting...")
+        scraper.close_driver()
+        exit(0)
+
+    # Step 3: Get the "Explore more programs" link
+    programs_url = scraper.get_explore_programs_link(country_url)
+
+    if not programs_url:
+        print("❌ Could not find programs link")
+        scraper.close_driver()
+        exit(1)
+
+    # Step 4: Collect all program URLs (fast, without logging in)
+    program_urls = scraper.collect_program_urls(programs_url)
+
+    if not program_urls:
+        print("\n❌ No program URLs were collected")
+        scraper.close_driver()
+        exit(1)
+
+    # Step 5: Login (after collecting URLs)
+    print("\n" + "=" * 50)
     print("🔐 APPLYBOARD LOGIN")
     print("=" * 50)
+    print("ℹ️  Login is recommended for accessing detailed program information")
 
     login_choice = input("\nDo you want to login? (y/n): ").strip().lower()
 
@@ -773,29 +992,8 @@ if __name__ == "__main__":
         print("\n⚠️  Continuing without login. Some features may be limited.\n")
         time.sleep(1)
 
-    # Step 1: Get study destinations
-    countries = scraper.get_study_destinations()
-
-    if not countries:
-        print("❌ Could not fetch study destinations")
-        exit(1)
-
-    # Step 2: Display menu and get user selection
-    selected_country, country_url = scraper.display_country_menu()
-
-    if not country_url:
-        print("No country selected. Exiting...")
-        exit(0)
-
-    # Step 3: Get the "Explore more programs" link
-    programs_url = scraper.get_explore_programs_link(country_url)
-
-    if not programs_url:
-        print("❌ Could not find programs link")
-        exit(1)
-
-    # Step 4: Scrape programs page
-    programs = scraper.scrape_programs_page(programs_url)
+    # Step 6: Scrape detailed data from each program URL
+    programs = scraper.scrape_programs_from_urls(program_urls)
 
     if programs:
         # Save to JSON
@@ -812,4 +1010,5 @@ if __name__ == "__main__":
         print(f"📊 Total programs: {len(programs)}")
     else:
         print("\n❌ No programs were scraped")
+
     scraper.close_driver()
