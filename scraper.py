@@ -151,7 +151,7 @@ class ApplyBoardScraper(WebScraper):
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            options.add_argument("--headless")  # Run in background
+            # options.add_argument("--headless")  # Run in background
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             self.driver = webdriver.Firefox(options=options)
@@ -162,7 +162,7 @@ class ApplyBoardScraper(WebScraper):
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                options.add_argument("--headless")
+                # options.add_argument("--headless")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 self.driver = webdriver.Chrome(options=options)
@@ -378,105 +378,180 @@ class ApplyBoardScraper(WebScraper):
 
     def scrape_program_card(self, article) -> Dict[str, Any]:
         """
-        Extract data from a single program card.
-
-        Args:
-            article: BeautifulSoup element of the program card
-
-        Returns:
-            Dictionary containing program data
+        Extract data from a single program card by visiting its detail page.
         """
         program = {}
 
-        try:
-            # School name
-            school_h3 = article.find("h3", class_="css-1a91344")
-            if school_h3:
-                program["school_name"] = school_h3.get_text(strip=True)
+        # Find the div with class 'css-0' and then the <a> inside it
+        div = article.find("div", class_="css-0")
+        detail_link = None
+        if div:
+            detail_link = div.find("a", class_="css-cxyr4a", href=True)
+        if not detail_link or not detail_link["href"]:
+            print("No detail link found in card.")
+            return {}
 
-            # School URL
-            school_link = article.find("a", href=True, class_="css-cxyr4a")
-            if school_link and "/schools/" in school_link["href"]:
-                program["school_url"] = school_link["href"]
+        detail_url = detail_link["href"]
+        if detail_url.startswith("/"):
+            detail_url = f"https://www.applyboard.com{detail_url}"
+        # Wait a bit before loading the detail page (to avoid rate limiting and ensure load)
+        time.sleep(2)
 
-            # Degree type
-            degree_div = article.find("div", class_="css-eqx0xi")
-            if degree_div:
-                program["degree_type"] = degree_div.get_text(strip=True)
+        # Visit detail page with Selenium
+        detail_soup = self.fetch_detail_page_with_js(detail_url)
+        if not detail_soup:
+            print(f"Failed to load detail page: {detail_url}")
+            return {}
+        # Extract all required fields from detail page
+        program.update(self.extract_program_detail(detail_soup))
 
-            # Program name
-            program_h2 = article.find("h2", class_="css-7iklpx")
-            if program_h2:
-                program["program_name"] = program_h2.get_text(strip=True)
-
-            # Program URL
-            program_link = article.find("a", href=True)
-            if program_link and "/programs/" in program_link.get("href", ""):
-                program["program_url"] = program_link["href"]
-
-            # Extract details from the dl (definition list)
-            dl = article.find("dl", class_="css-1d44v5m")
-            if dl:
-                details = dl.find_all("div", class_="css-1afznku")
-                for detail in details:
-                    dt = detail.find("dt")
-                    dd = detail.find("dd")
-                    if dt and dd:
-                        key = dt.get_text(strip=True).lower().replace(" ", "_")
-                        value = dd.get_text(strip=True)
-                        program[key] = value
-
-            # Success chance
-            success_div = article.find("div", class_="css-koraoo")
-            if success_div and success_div.get_text(strip=True) in [
-                "High",
-                "Medium",
-                "Low",
-            ]:
-                program["success_chance"] = success_div.get_text(strip=True)
-
-            # Available intakes
-            intakes = []
-            intake_divs = article.find_all("div", class_="css-koraoo")
-            for div in intake_divs:
-                text = div.get_text(strip=True)
-                # Check if it matches date pattern (e.g., "Mar 2026")
-                if any(
-                    month in text
-                    for month in [
-                        "Jan",
-                        "Feb",
-                        "Mar",
-                        "Apr",
-                        "May",
-                        "Jun",
-                        "Jul",
-                        "Aug",
-                        "Sep",
-                        "Oct",
-                        "Nov",
-                        "Dec",
-                    ]
-                ):
-                    if text not in intakes:
-                        intakes.append(text)
-            if intakes:
-                program["available_intakes"] = intakes
-
-            # Check for special features
-            features = []
-            feature_spans = article.find_all("span", class_="css-1wftnvw")
-            for span in feature_spans:
-                feature = span.get_text(strip=True)
-                if feature:
-                    features.append(feature)
-            if features:
-                program["features"] = features
-
-        except Exception as e:
-            print(f"Error parsing program card: {e}")
+        # Add program URL for reference
+        program["program_url"] = detail_url
 
         return program
+
+    def fetch_detail_page_with_js(self, url: str) -> BeautifulSoup:
+        driver = self.setup_driver()
+        if not driver:
+            return None
+
+        try:
+            driver.get(url)
+            # Try to wait for a unique element that always appears on the detail page
+            try:
+                # WebDriverWait(driver, 20).until(
+                #     EC.presence_of_element_located(
+                #         (By.CSS_SELECTOR, "div.MuiPaper-root")
+                #     )
+                # )
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "div.MuiPaper-root")
+                    )
+                )
+            except TimeoutException:
+                print("⚠️ Timeout waiting for main content, continuing anyway...")
+
+            # Click 'Show More' for program summary if present
+            try:
+                show_more_btn = driver.find_element(
+                    By.XPATH, "//button[.//p[contains(text(),'Show More')]]"
+                )
+                if show_more_btn.is_displayed():
+                    driver.execute_script("arguments[0].click();", show_more_btn)
+                    time.sleep(2)
+            except Exception:
+                pass  # No show more button
+
+            # Wait for dynamic content to expand
+            time.sleep(2)
+            return BeautifulSoup(driver.page_source, "lxml")
+        except Exception as e:
+            print(f"Error loading detail page: {e}")
+            return None
+
+    def extract_program_detail(self, soup: BeautifulSoup) -> Dict[str, Any]:
+        """
+        Extract all required fields from the program detail page soup.
+        """
+        data = {}
+
+        # Program Summary
+        summary = ""
+        about_div = soup.find("div", class_="cds-temp__aboutProgram")
+        if about_div:
+            p_tags = about_div.find_all("p")
+            summary = " ".join(p.get_text(" ", strip=True) for p in p_tags)
+        data["program_summary"] = summary
+
+        # Program Info (Level, Length, Fees, etc.)
+        info = {}
+        cost_and_duration_section = soup.find("h3", string="Cost and Duration")
+        if cost_and_duration_section:
+            section_div = cost_and_duration_section.find_parent("section")
+            if section_div:
+                for item in section_div.find_all("div", class_="css-1pjzxzh"):
+                    label_div = item.find("div", class_="css-1uo86s9")
+                    value_div = item.find("div", class_="css-1a5xebh")
+                    if label_div and value_div:
+                        label = label_div.get_text(strip=True)
+                        value = value_div.get_text(strip=True)
+                        info[label] = value
+        data["program_info"] = info
+
+        # Program Intakes
+        intakes = []
+        intakes_section = soup.find("p", string="Program Intakes")
+        if intakes_section:
+            intakes_box = intakes_section.find_parent("div")
+            if intakes_box:
+                for intake_div in intakes_box.find_all(
+                    "div", class_="MuiBox-root", recursive=True
+                ):
+                    date_p = intake_div.find(
+                        "p",
+                        class_="MuiTypography-root",
+                        style=lambda x: x and "overflow" in x,
+                    )
+                    if date_p:
+                        intakes.append(date_p.get_text(strip=True))
+        data["program_intakes"] = intakes
+
+        # Residence Permit for Job Seekers
+        permit = ""
+        permit_section = soup.find(
+            "div", class_="css-ubjcg", string="Residence Permit for Job Seekers"
+        )
+        if permit_section:
+            details = permit_section.find_parent(
+                "div", class_="MuiAccordionSummary-content"
+            )
+            if details:
+                permit_detail = details.find_next(
+                    "div", class_="MuiAccordionDetails-root"
+                )
+                if permit_detail:
+                    permit = permit_detail.get_text(" ", strip=True)
+        data["residence_permit"] = permit
+
+        # Admission Requirements
+        requirements = {}
+        req_section = soup.find("p", string="Admission Requirements")
+        if req_section:
+            req_box = req_section.find_parent("div")
+            if req_box:
+                for p in req_box.find_all("p", class_="MuiTypography-root"):
+                    label = p.get_text(strip=True)
+                    next_div = p.find_next_sibling("div")
+                    if next_div:
+                        value = next_div.get_text(" ", strip=True)
+                        requirements[label] = value
+        data["admission_requirements"] = requirements
+
+        # University Info
+        uni_info = {}
+        uni_link = soup.find("a", class_="css-vzjlnl")
+        if uni_link:
+            uni_info["university_name"] = uni_link.get_text(strip=True)
+            uni_info["university_url"] = "https://www.applyboard.com" + uni_link.get(
+                "href", ""
+            )
+            location = uni_link.find_next("p", class_="MuiTypography-root")
+            if location:
+                uni_info["location"] = location.get_text(strip=True)
+        data["university_info"] = uni_info
+
+        # Other Details (views, fast acceptance, etc.)
+        fast_accept = soup.find("span", class_="css-1wftnvw")
+        if fast_accept:
+            data["fast_acceptance"] = fast_accept.get_text(strip=True)
+        views = soup.find(
+            "p", class_="MuiTypography-root", style=lambda x: x and "color" in x
+        )
+        if views:
+            data["views"] = views.get_text(strip=True)
+
+        return data
 
     def scrape_programs_page(
         self, programs_url: str, max_items: int = None
