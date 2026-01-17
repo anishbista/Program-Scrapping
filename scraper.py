@@ -14,6 +14,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.common.exceptions import TimeoutException
+import csv
+import gzip
+from pathlib import Path
 
 
 class WebScraper:
@@ -115,6 +118,47 @@ class WebScraper:
         print(f"✓ Data saved to {filename}")
         print(f"✓ Total items scraped: {len(data)}")
 
+    def save_to_csv(self, data: List[Dict[str, Any]], filename: str = None):
+        """
+        OPTIMIZED: Save data to CSV for easier analysis.
+
+        Args:
+            data: List of dictionaries to save
+            filename: Output filename (auto-generated if None)
+        """
+        if not data:
+            return
+
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"scraped_data_{timestamp}.csv"
+
+        # Flatten nested dictionaries for CSV
+        flattened_data = []
+        for item in data:
+            flat_item = {}
+            for key, value in item.items():
+                if isinstance(value, dict):
+                    # Flatten nested dict
+                    for sub_key, sub_value in value.items():
+                        flat_item[f"{key}_{sub_key}"] = str(sub_value)
+                elif isinstance(value, list):
+                    # Convert list to JSON string
+                    flat_item[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    flat_item[key] = value
+            flattened_data.append(flat_item)
+
+        # Write CSV
+        if flattened_data:
+            keys = flattened_data[0].keys()
+            with open(filename, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=keys)
+                writer.writeheader()
+                writer.writerows(flattened_data)
+
+            print(f"✓ CSV data saved to {filename}")
+
     def run(self, save_file: str = None):
         """
         Run the complete scraping process.
@@ -152,6 +196,11 @@ class ApplyBoardScraper(WebScraper):
         self.email = os.getenv("APPLYBOARD_EMAIL")
         self.password = os.getenv("APPLYBOARD_PASSWORD")
 
+        # Optimization settings
+        self.batch_size = 50  # Save every N programs
+        self.resume_file = "scraper_progress.json"
+        self.scraped_urls = set()  # Track completed URLs
+
     def setup_driver(self):
         """Setup Selenium WebDriver (tries Firefox first, then Chrome)."""
         if self.driver:
@@ -160,22 +209,33 @@ class ApplyBoardScraper(WebScraper):
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            # options.add_argument("--headless")  # Run in background
+            options.add_argument("--headless")  # OPTIMIZED: Run in background for speed
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")  # Faster in headless
+            options.set_preference("dom.webdriver.enabled", False)
+            options.set_preference("useAutomationExtension", False)
+            # Memory optimization
+            options.set_preference("browser.cache.disk.enable", False)
+            options.set_preference("browser.cache.memory.enable", False)
             self.driver = webdriver.Firefox(options=options)
-            print("✓ Firefox WebDriver ready")
+            print("✓ Firefox WebDriver ready (headless mode)")
             return self.driver
         except Exception as e:
             print(f"Firefox not available: {e}")
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                # options.add_argument("--headless")
+                options.add_argument("--headless")  # OPTIMIZED: Run in background
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--disable-gpu")
+                options.add_argument("--disable-dev-tools")
+                options.add_argument("--disable-extensions")
+                # Memory optimization
+                options.add_argument("--disable-application-cache")
                 self.driver = webdriver.Chrome(options=options)
-                print("✓ Chrome WebDriver ready")
+                print("✓ Chrome WebDriver ready (headless mode)")
                 return self.driver
             except Exception as e2:
                 print(f"❌ Chrome also not available: {e2}")
@@ -553,8 +613,8 @@ class ApplyBoardScraper(WebScraper):
         """
         program = {}
 
-        # Wait a bit before loading the detail page (to avoid rate limiting)
-        time.sleep(2)
+        # OPTIMIZED: Reduced wait time from 2 to 0.5 seconds
+        time.sleep(0.5)
 
         # Use existing driver instead of creating new one
         driver = self.driver
@@ -564,9 +624,9 @@ class ApplyBoardScraper(WebScraper):
 
         try:
             driver.get(url)
-            # Wait for main content
+            # OPTIMIZED: Reduced timeout from 20 to 10 seconds
             try:
-                WebDriverWait(driver, 20).until(
+                WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located(
                         (By.CSS_SELECTOR, "div.MuiPaper-root")
                     )
@@ -1825,14 +1885,48 @@ class ApplyBoardScraper(WebScraper):
         print(f"\n✅ Total program URLs collected: {len(all_urls)}")
         return all_urls
 
+    def load_progress(self, country: str) -> dict:
+        """OPTIMIZED: Load saved progress to resume interrupted scrapes."""
+        progress_file = f"{country}_progress.json"
+        if os.path.exists(progress_file):
+            with open(progress_file, "r") as f:
+                progress = json.load(f)
+                self.scraped_urls = set(progress.get("completed_urls", []))
+                print(
+                    f"📂 Loaded progress: {len(self.scraped_urls)} programs already scraped"
+                )
+                return progress
+        return {"completed_urls": [], "programs": []}
+
+    def save_progress(
+        self, country: str, programs: List[Dict], completed_urls: List[str]
+    ):
+        """OPTIMIZED: Save progress to allow resume."""
+        progress_file = f"{country}_progress.json"
+        progress = {
+            "completed_urls": completed_urls,
+            "programs": programs,
+            "last_updated": datetime.now().isoformat(),
+        }
+        with open(progress_file, "w", encoding="utf-8") as f:
+            json.dump(progress, f, indent=2, ensure_ascii=False)
+        print(f"💾 Progress saved: {len(completed_urls)} programs")
+
+    def save_batch(self, programs: List[Dict], country: str, batch_num: int):
+        """OPTIMIZED: Save data in batches to prevent data loss."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{country}_batch_{batch_num}_{timestamp}.json"
+        self.save_to_json(programs, filename)
+
     def scrape_programs_from_urls(
-        self, program_urls: List[str]
+        self, program_urls: List[str], country: str = "programs"
     ) -> List[Dict[str, Any]]:
         """
-        Scrape detailed program data by visiting each program URL.
+        OPTIMIZED: Scrape with batch saving, resume capability, and retry logic.
 
         Args:
             program_urls: List of program detail page URLs
+            country: Country name for file naming
 
         Returns:
             List of program data dictionaries
@@ -1840,29 +1934,83 @@ class ApplyBoardScraper(WebScraper):
         print(f"\n📚 Starting detailed scraping of {len(program_urls)} programs...")
         print("=" * 50 + "\n")
 
-        all_programs = []
+        # OPTIMIZED: Load previous progress
+        progress = self.load_progress(country)
+        all_programs = progress.get("programs", [])
+        completed_urls = set(progress.get("completed_urls", []))
+
+        # Filter out already scraped URLs
+        remaining_urls = [url for url in program_urls if url not in completed_urls]
+
+        if len(remaining_urls) < len(program_urls):
+            print(
+                f"⏭️  Skipping {len(program_urls) - len(remaining_urls)} already scraped programs"
+            )
+            print(f"📋 Remaining: {len(remaining_urls)} programs\n")
 
         # Ensure driver is set up once before scraping all programs
         if not self.driver:
             self.setup_driver()
 
-        for idx, url in enumerate(program_urls, 1):
-            print(f"📖 Scraping program {idx}/{len(program_urls)}...")
+        batch_programs = []
+        batch_num = len(all_programs) // self.batch_size + 1
+
+        # Track failed programs for retry
+        failed_programs = {}  # {url: retry_count}
+        MAX_RETRIES = 3
+
+        for idx, url in enumerate(remaining_urls, 1):
+            print(
+                f"📖 Scraping program {idx}/{len(remaining_urls)} (Total: {len(all_programs) + idx}/{len(program_urls)})..."
+            )
             print(f"   URL: {url}")
+
+            success = False
+            retry_count = failed_programs.get(url, 0)
 
             try:
                 program = self.scrape_program_detail_from_url(url)
                 if program and program.get("program_name"):  # Verify we got actual data
                     all_programs.append(program)
+                    batch_programs.append(program)
+                    completed_urls.add(url)
+                    success = True
+
                     # Show a preview of what was scraped
                     program_name = program.get("university_info", {}).get(
                         "university_name", "Unknown"
                     )
                     print(f"   ✓ Scraped: {program_name}")
+
+                    # Remove from failed programs if it was there
+                    if url in failed_programs:
+                        del failed_programs[url]
                 else:
-                    print(f"   ✗ Failed to scrape this program (no data returned)")
+                    # No data returned
+                    retry_count += 1
+                    if retry_count < MAX_RETRIES:
+                        failed_programs[url] = retry_count
+                        print(
+                            f"   ✗ Failed to scrape (no data returned) - Attempt {retry_count}/{MAX_RETRIES}"
+                        )
+                    else:
+                        print(
+                            f"   ✗ Failed to scrape (no data returned) - Max retries ({MAX_RETRIES}) reached, skipping"
+                        )
+                        if url in failed_programs:
+                            del failed_programs[url]
+
             except Exception as e:
                 print(f"   ✗ Exception while scraping: {e}")
+                retry_count += 1
+                if retry_count < MAX_RETRIES:
+                    failed_programs[url] = retry_count
+                    print(f"   🔄 Will retry - Attempt {retry_count}/{MAX_RETRIES}")
+                else:
+                    print(f"   ✗ Max retries ({MAX_RETRIES}) reached, skipping")
+                    if url in failed_programs:
+                        del failed_programs[url]
+
                 # If driver crashed, try to recover
                 if (
                     "invalid session id" in str(e).lower()
@@ -1872,10 +2020,154 @@ class ApplyBoardScraper(WebScraper):
                     self.close_driver()
                     self.setup_driver()
 
+            # OPTIMIZED: Save progress periodically
+            if len(batch_programs) >= self.batch_size:
+                print(f"\n💾 Saving batch {batch_num}...")
+                self.save_batch(batch_programs, country, batch_num)
+                self.save_progress(country, all_programs, list(completed_urls))
+                batch_programs = []
+                batch_num += 1
+
+                # OPTIMIZED: Clear browser cache periodically
+                if self.driver and idx % (self.batch_size * 2) == 0:
+                    print("🧹 Clearing browser cache...")
+                    try:
+                        self.driver.delete_all_cookies()
+                    except:
+                        pass
+
             # Show progress
             print(
                 f"   Progress: {len(all_programs)}/{len(program_urls)} programs completed\n"
             )
+
+        # Retry failed programs
+        if failed_programs:
+            print("\n" + "=" * 50)
+            print(f"🔄 RETRYING {len(failed_programs)} FAILED PROGRAMS")
+            print("=" * 50 + "\n")
+
+            retry_urls = list(failed_programs.keys())
+            for retry_idx, url in enumerate(retry_urls, 1):
+                retry_count = failed_programs[url]
+                print(
+                    f"🔄 Retry {retry_idx}/{len(retry_urls)} - Attempt {retry_count + 1}/{MAX_RETRIES}"
+                )
+                print(f"   URL: {url}")
+
+                try:
+                    program = self.scrape_program_detail_from_url(url)
+                    if program and program.get("program_name"):
+                        all_programs.append(program)
+                        batch_programs.append(program)
+                        completed_urls.add(url)
+
+                        program_name = program.get("university_info", {}).get(
+                            "university_name", "Unknown"
+                        )
+                        print(f"   ✓ Retry successful: {program_name}")
+                        del failed_programs[url]
+                    else:
+                        retry_count += 1
+                        if retry_count < MAX_RETRIES:
+                            failed_programs[url] = retry_count
+                            print(
+                                f"   ✗ Retry failed (no data) - Attempt {retry_count}/{MAX_RETRIES}"
+                            )
+                        else:
+                            print(
+                                f"   ✗ Max retries ({MAX_RETRIES}) reached, giving up"
+                            )
+                            del failed_programs[url]
+
+                except Exception as e:
+                    print(f"   ✗ Retry exception: {e}")
+                    retry_count += 1
+                    if retry_count < MAX_RETRIES:
+                        failed_programs[url] = retry_count
+                        print(
+                            f"   🔄 Will retry again - Attempt {retry_count}/{MAX_RETRIES}"
+                        )
+                    else:
+                        print(f"   ✗ Max retries ({MAX_RETRIES}) reached, giving up")
+                        del failed_programs[url]
+
+                    # Recover from driver issues
+                    if (
+                        "invalid session id" in str(e).lower()
+                        or "connection" in str(e).lower()
+                    ):
+                        print("   🔧 Driver issue detected, restarting driver...")
+                        self.close_driver()
+                        self.setup_driver()
+
+                print(
+                    f"   Retry Progress: {len(all_programs)}/{len(program_urls)} total completed\n"
+                )
+
+            # Continue retrying until no more failed programs or max retries reached
+            while failed_programs:
+                remaining_retries = list(failed_programs.keys())
+                print(f"\n🔄 {len(remaining_retries)} programs still need retry...\n")
+
+                for url in remaining_retries:
+                    retry_count = failed_programs[url]
+                    if retry_count >= MAX_RETRIES:
+                        del failed_programs[url]
+                        continue
+
+                    print(f"🔄 Retrying - Attempt {retry_count + 1}/{MAX_RETRIES}")
+                    print(f"   URL: {url}")
+
+                    try:
+                        program = self.scrape_program_detail_from_url(url)
+                        if program and program.get("program_name"):
+                            all_programs.append(program)
+                            batch_programs.append(program)
+                            completed_urls.add(url)
+
+                            program_name = program.get("university_info", {}).get(
+                                "university_name", "Unknown"
+                            )
+                            print(f"   ✓ Retry successful: {program_name}")
+                            del failed_programs[url]
+                        else:
+                            retry_count += 1
+                            if retry_count < MAX_RETRIES:
+                                failed_programs[url] = retry_count
+                                print(
+                                    f"   ✗ Retry failed - Attempt {retry_count}/{MAX_RETRIES}"
+                                )
+                            else:
+                                print(f"   ✗ Max retries reached, giving up")
+                                del failed_programs[url]
+
+                    except Exception as e:
+                        print(f"   ✗ Retry exception: {e}")
+                        retry_count += 1
+                        if retry_count < MAX_RETRIES:
+                            failed_programs[url] = retry_count
+                        else:
+                            print(f"   ✗ Max retries reached, giving up")
+                            del failed_programs[url]
+
+                        if (
+                            "invalid session id" in str(e).lower()
+                            or "connection" in str(e).lower()
+                        ):
+                            print("   🔧 Restarting driver...")
+                            self.close_driver()
+                            self.setup_driver()
+
+                    print(
+                        f"   Total completed: {len(all_programs)}/{len(program_urls)}\n"
+                    )
+
+        # Save any remaining programs in final batch
+        if batch_programs:
+            print(f"\n💾 Saving final batch...")
+            self.save_batch(batch_programs, country, batch_num)
+            self.save_progress(country, all_programs, list(completed_urls))
 
         print(
             f"\n✅ Total programs successfully scraped: {len(all_programs)}/{len(program_urls)}"
@@ -1935,21 +2227,33 @@ if __name__ == "__main__":
         time.sleep(1)
 
     # Step 6: Scrape detailed data from each program URL
-    programs = scraper.scrape_programs_from_urls(program_urls)
+    country_name = selected_country.lower().replace(" ", "_")
+    programs = scraper.scrape_programs_from_urls(program_urls, country=country_name)
 
     if programs:
-        # Save to JSON
+        # Save final consolidated file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = (
-            f"{selected_country.lower().replace(' ', '_')}_programs_{timestamp}.json"
-        )
+        filename = f"{country_name}_programs_{timestamp}.json"
         scraper.save_to_json(programs, filename)
+
+        # OPTIMIZED: Also save as CSV for easier analysis
+        csv_filename = f"{country_name}_programs_{timestamp}.csv"
+        try:
+            scraper.save_to_csv(programs, csv_filename)
+        except Exception as e:
+            print(f"⚠️  Could not save CSV: {e}")
 
         print("\n" + "=" * 50)
         print("✅ SCRAPING COMPLETE")
         print("=" * 50)
         print(f"📁 Data saved to: {filename}")
         print(f"📊 Total programs: {len(programs)}")
+
+        # Clean up progress file
+        progress_file = f"{country_name}_progress.json"
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
+            print("🧹 Cleaned up progress file")
     else:
         print("\n❌ No programs were scraped")
 
