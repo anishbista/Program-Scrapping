@@ -497,12 +497,42 @@ class ApplyBoardScraper(WebScraper):
         Returns:
             Program detail page URL
         """
-        # Find the div with class 'css-0' and then the <a> inside it
-        div = article.find("div", class_="css-0")
+        # Try multiple strategies to find the program link
         detail_link = None
+
+        # Strategy 1: Look for link with specific class in div with class 'css-0'
+        div = article.find("div", class_="css-0")
         if div:
             detail_link = div.find("a", class_="css-cxyr4a", href=True)
-        if not detail_link or not detail_link["href"]:
+
+        # Strategy 2: Look for any link with class containing 'css-cxyr4a'
+        if not detail_link:
+            detail_link = article.find(
+                "a", class_=lambda x: x and "css-cxyr4a" in x if x else False, href=True
+            )
+
+        # Strategy 3: Look for link with target="_blank" that goes to /schools/
+        if not detail_link:
+            all_links = article.find_all("a", href=True, attrs={"target": "_blank"})
+            for link in all_links:
+                if "/schools/" in link.get("href", "") and "/programs/" in link.get(
+                    "href", ""
+                ):
+                    detail_link = link
+                    break
+
+        # Strategy 4: Use aria-label to find the right link
+        if not detail_link:
+            aria_label = article.get("aria-label", "")
+            if aria_label.startswith("View program"):
+                # Find any link with href containing /programs/
+                all_links = article.find_all("a", href=True)
+                for link in all_links:
+                    if "/programs/" in link.get("href", ""):
+                        detail_link = link
+                        break
+
+        if not detail_link or not detail_link.get("href"):
             return None
 
         detail_url = detail_link["href"]
@@ -1680,8 +1710,16 @@ class ApplyBoardScraper(WebScraper):
         while len(all_urls) < max_items:
             print(f"📄 Collecting URLs from page {page_num}...")
 
-            # Parse current page
-            articles = soup.find_all("article", class_="css-1v3njm")
+            # Parse current page - use more flexible selector
+            # Find all article elements with aria-label attribute (more robust)
+            articles = soup.find_all("article", attrs={"aria-label": True})
+
+            # Fallback to class-based search if no articles found
+            if not articles:
+                articles = soup.find_all(
+                    "article", class_=lambda x: x and "css-" in x if x else False
+                )
+
             print(f"   Found {len(articles)} program cards on this page")
 
             for article in articles:
