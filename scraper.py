@@ -159,7 +159,7 @@ class ApplyBoardScraper(WebScraper):
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            # options.add_argument("--headless")  # Run in background
+            options.add_argument("--headless")  # Run in background
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             self.driver = webdriver.Firefox(options=options)
@@ -170,7 +170,7 @@ class ApplyBoardScraper(WebScraper):
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                # options.add_argument("--headless")
+                options.add_argument("--headless")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 self.driver = webdriver.Chrome(options=options)
@@ -801,133 +801,167 @@ class ApplyBoardScraper(WebScraper):
         requirements = {}
         req_section = soup.find("p", string="Admission Requirements")
         if req_section:
-            # Get the main container - need to go up several levels to get the right container
+            # Get the main container - find the parent that contains all requirements
             main_container = req_section.find_parent("div", class_="MuiBox-root")
 
-            # Navigate to the actual requirements container
-            # The structure has nested MuiBox-root divs, we need to find the one containing all requirements
-            while main_container and not main_container.find(
-                "p", string=lambda x: x and "Academic Background" in x if x else False
-            ):
-                next_container = main_container.find("div", class_="MuiBox-root")
-                if next_container:
-                    main_container = next_container
+            # Look for the container with jss106 class or find the one that has Academic Background
+            # Go up a few levels to get the right container
+            for _ in range(5):  # Try up to 5 parent levels
+                if main_container and main_container.find(
+                    "p",
+                    string=lambda x: x and "Academic Background" in x if x else False,
+                ):
+                    break
+                if main_container:
+                    main_container = main_container.find_parent(
+                        "div", class_="MuiBox-root"
+                    )
                 else:
                     break
 
             if main_container:
                 # Extract Academic Background
                 academic_bg = {}
+
+                # Find "Academic Background" section
                 academic_section = main_container.find(
                     "p",
                     string=lambda x: x and "Academic Background" in x if x else False,
                 )
                 if academic_section:
-                    # Find Minimum Level of Education
-                    min_edu_label = main_container.find(
-                        "p", string="Minimum Level of Education Completed"
+                    # Find the parent container that holds all academic requirements
+                    academic_container = academic_section.find_next(
+                        "div", class_="MuiBox-root"
                     )
-                    if min_edu_label:
-                        # Look for the value in the collapse section
-                        collapse = min_edu_label.find_parent("div").find_next(
-                            "div", class_="MuiCollapse-root"
-                        )
-                        if collapse:
-                            edu_value = collapse.find("p", class_="MuiTypography-root")
-                            if edu_value:
-                                academic_bg["minimum_education"] = edu_value.get_text(
-                                    strip=True
-                                )
 
-                    # Find Minimum GPA
-                    min_gpa_label = main_container.find("p", string="Minimum GPA")
-                    if min_gpa_label:
-                        collapse = min_gpa_label.find_parent("div").find_next(
-                            "div", class_="MuiCollapse-root"
+                    if academic_container:
+                        # Find Minimum Level of Education
+                        min_edu_label = academic_container.find(
+                            "p", string="Minimum Level of Education Completed"
                         )
-                        if collapse:
-                            gpa_value = collapse.find("p", class_="MuiTypography-root")
-                            if gpa_value:
-                                academic_bg["minimum_gpa"] = gpa_value.get_text(
-                                    strip=True
+                        if min_edu_label:
+                            # Look for the collapse section that contains the value
+                            collapse = min_edu_label.find_parent("div").find_next(
+                                "div", class_="MuiCollapse-root"
+                            )
+                            if collapse:
+                                edu_value = collapse.find(
+                                    "p", class_="MuiTypography-root"
                                 )
+                                if edu_value:
+                                    academic_bg["minimum_education"] = (
+                                        edu_value.get_text(strip=True)
+                                    )
+
+                        # Find Minimum GPA
+                        min_gpa_label = academic_container.find(
+                            "p", string="Minimum GPA"
+                        )
+                        if min_gpa_label:
+                            # Look for the collapse section
+                            collapse = min_gpa_label.find_parent("div").find_next(
+                                "div", class_="MuiCollapse-root"
+                            )
+                            if collapse:
+                                gpa_value = collapse.find(
+                                    "p", class_="MuiTypography-root"
+                                )
+                                if gpa_value:
+                                    academic_bg["minimum_gpa"] = gpa_value.get_text(
+                                        strip=True
+                                    )
 
                 requirements["academic_background"] = academic_bg
 
                 # Extract Language Test Scores
                 language_tests = {}
+
+                # Find "Minimum Language Test Scores" section
                 lang_section = main_container.find(
                     "p", string="Minimum Language Test Scores"
                 )
                 if lang_section:
-                    # Find all language test containers
+                    # Find the container that holds all language tests
                     lang_container = lang_section.find_next("div", class_="MuiBox-root")
+
                     if lang_container:
                         # Find IELTS
                         ielts_label = lang_container.find("p", string="IELTS")
                         if ielts_label:
-                            collapse = ielts_label.find_parent("div").find_next(
-                                "div", class_="MuiCollapse-root"
-                            )
-                            if collapse:
-                                ielts_value = collapse.find(
-                                    "p", class_="MuiTypography-root"
+                            # Get the parent container and then find the collapse section
+                            parent_div = ielts_label.find_parent("div")
+                            if parent_div:
+                                collapse = parent_div.find_next(
+                                    "div", class_="MuiCollapse-root"
                                 )
-                                if ielts_value:
-                                    language_tests["IELTS"] = ielts_value.get_text(
-                                        strip=True
+                                if collapse:
+                                    # Find the value - it should be after the hr divider
+                                    ielts_value = collapse.find(
+                                        "p", class_="MuiTypography-root"
                                     )
+                                    if ielts_value:
+                                        language_tests["IELTS"] = ielts_value.get_text(
+                                            strip=True
+                                        )
 
                         # Find TOEFL
                         toefl_label = lang_container.find("p", string="TOEFL")
                         if toefl_label:
-                            collapse = toefl_label.find_parent("div").find_next(
-                                "div", class_="MuiCollapse-root"
-                            )
-                            if collapse:
-                                toefl_value = collapse.find(
-                                    "p", class_="MuiTypography-root"
+                            parent_div = toefl_label.find_parent("div")
+                            if parent_div:
+                                collapse = parent_div.find_next(
+                                    "div", class_="MuiCollapse-root"
                                 )
-                                if toefl_value:
-                                    language_tests["TOEFL"] = toefl_value.get_text(
-                                        strip=True
+                                if collapse:
+                                    toefl_value = collapse.find(
+                                        "p", class_="MuiTypography-root"
                                     )
+                                    if toefl_value:
+                                        language_tests["TOEFL"] = toefl_value.get_text(
+                                            strip=True
+                                        )
 
                         # Find DUOLINGO
                         duolingo_label = lang_container.find("p", string="DUOLINGO")
                         if duolingo_label:
-                            collapse = duolingo_label.find_parent("div").find_next(
-                                "div", class_="MuiCollapse-root"
-                            )
-                            if collapse:
-                                duolingo_value = collapse.find(
-                                    "p", class_="MuiTypography-root"
+                            parent_div = duolingo_label.find_parent("div")
+                            if parent_div:
+                                collapse = parent_div.find_next(
+                                    "div", class_="MuiCollapse-root"
                                 )
-                                if duolingo_value:
-                                    duolingo_data = {
-                                        "overall": duolingo_value.get_text(strip=True)
-                                    }
-
-                                    # Extract detailed scores (Comprehension, Production, etc.)
-                                    detail_boxes = collapse.find_all(
-                                        "div", class_="MuiBox-root"
+                                if collapse:
+                                    # Find the overall score first
+                                    duolingo_overall = collapse.find(
+                                        "p", class_="MuiTypography-root"
                                     )
-                                    for box in detail_boxes:
-                                        all_p = box.find_all(
-                                            "p", class_="MuiTypography-root"
-                                        )
-                                        if len(all_p) >= 2:
-                                            label = all_p[0].get_text(strip=True)
-                                            value = all_p[1].get_text(strip=True)
-                                            if label in [
-                                                "Comprehension",
-                                                "Production",
-                                                "Conversation",
-                                                "Literacy",
-                                            ]:
-                                                duolingo_data[label.lower()] = value
+                                    if duolingo_overall:
+                                        duolingo_data = {
+                                            "overall": duolingo_overall.get_text(
+                                                strip=True
+                                            )
+                                        }
 
-                                    language_tests["DUOLINGO"] = duolingo_data
+                                        # Extract detailed scores (Comprehension, Production, etc.)
+                                        # Look for nested MuiBox-root divs with pairs of labels and values
+                                        detail_boxes = collapse.find_all(
+                                            "div", class_="MuiBox-root"
+                                        )
+                                        for box in detail_boxes:
+                                            all_p = box.find_all(
+                                                "p", class_="MuiTypography-root"
+                                            )
+                                            if len(all_p) >= 2:
+                                                label = all_p[0].get_text(strip=True)
+                                                value = all_p[1].get_text(strip=True)
+                                                if label in [
+                                                    "Comprehension",
+                                                    "Production",
+                                                    "Conversation",
+                                                    "Literacy",
+                                                ]:
+                                                    duolingo_data[label.lower()] = value
+
+                                        language_tests["DUOLINGO"] = duolingo_data
 
                 requirements["language_tests"] = language_tests
 
@@ -939,20 +973,26 @@ class ApplyBoardScraper(WebScraper):
                     "p", string="This program requires valid language test results"
                 )
                 if valid_test_label:
-                    collapse = valid_test_label.find_parent("div").find_next(
-                        "div", class_="MuiCollapse-root"
-                    )
-                    if collapse:
-                        test_req_text = collapse.find(
-                            "p", attrs={"data-testid": "allows-for-all-countries"}
+                    # Find the parent container and then the collapse section
+                    parent_div = valid_test_label.find_parent("div")
+                    if parent_div:
+                        collapse = parent_div.find_next(
+                            "div", class_="MuiCollapse-root"
                         )
-                        if test_req_text:
-                            additional_reqs.append(
-                                {
-                                    "type": "valid_test_results",
-                                    "description": test_req_text.get_text(strip=True),
-                                }
+                        if collapse:
+                            # Look for the actual text content
+                            test_req_text = collapse.find(
+                                "p", attrs={"data-testid": "allows-for-all-countries"}
                             )
+                            if test_req_text:
+                                additional_reqs.append(
+                                    {
+                                        "type": "valid_test_results",
+                                        "description": test_req_text.get_text(
+                                            strip=True
+                                        ),
+                                    }
+                                )
 
                 # Check for nationality-specific English requirements
                 nationality_label = main_container.find(
@@ -960,60 +1000,79 @@ class ApplyBoardScraper(WebScraper):
                     string="This program has nationality specific English requirements",
                 )
                 if nationality_label:
-                    collapse = nationality_label.find_parent("div").find_next(
-                        "div", class_="MuiCollapse-root"
-                    )
-                    if collapse:
-                        # Find the nationality-specific data
-                        nationality_data = {}
-                        ere_info = collapse.find(
-                            "div", attrs={"data-testid": "program-ere-info"}
+                    # Find the parent container
+                    parent_div = nationality_label.find_parent("div")
+                    if parent_div:
+                        collapse = parent_div.find_next(
+                            "div", class_="MuiCollapse-root"
                         )
-                        if ere_info:
-                            # Find all accordion sections (one per country)
-                            accordions = ere_info.find_all(
-                                "div", class_="MuiAccordion-root"
+                        if collapse:
+                            # Find the nationality-specific data
+                            nationality_data = {}
+
+                            # Look for the program-ere-info div
+                            ere_info = collapse.find(
+                                "div", attrs={"data-testid": "program-ere-info"}
                             )
-                            for accordion in accordions:
-                                # Get country name
-                                summary = accordion.find(
-                                    "div", class_="MuiAccordionSummary-content"
+                            if ere_info:
+                                # Find all accordion sections (one per country)
+                                accordions = ere_info.find_all(
+                                    "div", class_="MuiAccordion-root"
                                 )
-                                if summary:
-                                    country = summary.get_text(strip=True)
 
-                                    # Get the table with test scores
-                                    table = accordion.find(
-                                        "table", class_="MuiTable-root"
+                                for accordion in accordions:
+                                    # Get country name from accordion summary
+                                    summary = accordion.find(
+                                        "div", class_="MuiAccordionSummary-content"
                                     )
-                                    if table:
-                                        country_reqs = []
-                                        rows = table.find("tbody").find_all("tr")
-                                        for row in rows:
-                                            cells = row.find_all(["th", "td"])
-                                            if len(cells) >= 6:
-                                                test_name = cells[0].get_text(
-                                                    strip=True
-                                                )
-                                                test_data = {
-                                                    "test": test_name,
-                                                    "L": cells[1].get_text(strip=True),
-                                                    "R": cells[2].get_text(strip=True),
-                                                    "S": cells[3].get_text(strip=True),
-                                                    "W": cells[4].get_text(strip=True),
-                                                    "O": cells[5].get_text(strip=True),
-                                                }
-                                                country_reqs.append(test_data)
+                                    if summary:
+                                        country = summary.get_text(strip=True)
 
-                                        nationality_data[country] = country_reqs
+                                        # Get the table with test scores
+                                        table = accordion.find(
+                                            "table", class_="MuiTable-root"
+                                        )
+                                        if table:
+                                            country_reqs = []
+                                            tbody = table.find("tbody")
+                                            if tbody:
+                                                rows = tbody.find_all("tr")
+                                                for row in rows:
+                                                    cells = row.find_all(["th", "td"])
+                                                    if len(cells) >= 6:
+                                                        test_name = cells[0].get_text(
+                                                            strip=True
+                                                        )
+                                                        test_data = {
+                                                            "test": test_name,
+                                                            "L": cells[1].get_text(
+                                                                strip=True
+                                                            ),
+                                                            "R": cells[2].get_text(
+                                                                strip=True
+                                                            ),
+                                                            "S": cells[3].get_text(
+                                                                strip=True
+                                                            ),
+                                                            "W": cells[4].get_text(
+                                                                strip=True
+                                                            ),
+                                                            "O": cells[5].get_text(
+                                                                strip=True
+                                                            ),
+                                                        }
+                                                        country_reqs.append(test_data)
 
-                        if nationality_data:
-                            additional_reqs.append(
-                                {
-                                    "type": "nationality_specific",
-                                    "data": nationality_data,
-                                }
-                            )
+                                            if country_reqs:
+                                                nationality_data[country] = country_reqs
+
+                            if nationality_data:
+                                additional_reqs.append(
+                                    {
+                                        "type": "nationality_specific",
+                                        "data": nationality_data,
+                                    }
+                                )
 
                 requirements["additional_requirements"] = additional_reqs
 
@@ -1047,7 +1106,7 @@ class ApplyBoardScraper(WebScraper):
             "p", class_="MuiTypography-root", style=lambda x: x and "color" in x
         )
         if views:
-            data["views"] = views.get_text(strip=True)
+            data["name"] = views.get_text(strip=True)
 
         return data
 
