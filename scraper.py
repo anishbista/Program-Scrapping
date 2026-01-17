@@ -759,12 +759,32 @@ class ApplyBoardScraper(WebScraper):
         # Program Info (Level, Length, Fees, etc.)
         info = {}
 
-        # Look for program info containers with data-testid attributes
-        info_containers = soup.find_all(
-            "div",
-            {"data-testid": lambda x: x and x.startswith("program-info-container-")},
-        )
-        if info_containers:
+        # Look for the main program info card
+        program_info_section = None
+        for card in soup.find_all("div", class_="MuiCard-root"):
+            # Check if this card contains program info containers
+            if card.find(
+                "div",
+                {
+                    "data-testid": lambda x: (
+                        x and x.startswith("program-info-container-") if x else False
+                    )
+                },
+            ):
+                program_info_section = card
+                break
+
+        if program_info_section:
+            # Extract main program info items
+            info_containers = program_info_section.find_all(
+                "div",
+                {
+                    "data-testid": lambda x: (
+                        x and x.startswith("program-info-container-") if x else False
+                    )
+                },
+            )
+
             for container in info_containers:
                 # Get all paragraph tags in this container
                 p_tags = container.find_all("p", class_="MuiTypography-root")
@@ -773,6 +793,79 @@ class ApplyBoardScraper(WebScraper):
                     value = p_tags[0].get_text(strip=True)
                     label = p_tags[1].get_text(strip=True)
                     info[label] = value
+
+            # Now look for "Other Fees" or similar additional sections
+            # Look for paragraphs with "Other Fees" text specifically
+            other_fees_titles = program_info_section.find_all(
+                "p",
+                class_="MuiTypography-root",
+                string=lambda x: x and "Other Fees" in x if x else False,
+            )
+
+            print(f"   Found {len(other_fees_titles)} 'Other Fees' sections")
+
+            for other_fees_p in other_fees_titles:
+                # Check if this is NOT inside a program-info-container
+                parent_container = other_fees_p.find_parent(
+                    "div",
+                    {
+                        "data-testid": lambda x: (
+                            x and x.startswith("program-info-container-")
+                            if x
+                            else False
+                        )
+                    },
+                )
+
+                if not parent_container:
+                    # This is a section title, not a value
+                    section_title = other_fees_p.get_text(strip=True)
+                    print(f"   Processing section: {section_title}")
+
+                    # Find the parent container for this section
+                    section_parent = other_fees_p.find_parent(
+                        "div", class_=lambda x: x and "jss" in x if x else False
+                    )
+
+                    if section_parent:
+                        fee_items = {}
+
+                        # Look for all divs with spacing/grid classes that contain fee information
+                        fee_containers = section_parent.find_all(
+                            "div", class_=lambda x: x and "jss" in x if x else False
+                        )
+
+                        for fee_div in fee_containers:
+                            # Find paragraphs within this div
+                            paragraphs = fee_div.find_all(
+                                "p", class_="MuiTypography-root", recursive=False
+                            )
+
+                            if len(paragraphs) >= 2:
+                                # Try to identify label and value
+                                # Look for the one with RZYf (label) and LblKF (value) or data-testid (value)
+                                label = None
+                                value = None
+
+                                for p in paragraphs:
+                                    p_classes = p.get("class", [])
+                                    if "RZYf" in p_classes or "RZYf" in str(p_classes):
+                                        label = p.get_text(strip=True)
+                                    elif "LblKF" in p_classes or "LblKF" in str(
+                                        p_classes
+                                    ):
+                                        value = p.get_text(" ", strip=True)
+                                    elif p.get("data-testid"):
+                                        # This is likely the value with more accurate formatting
+                                        value = p.get_text(" ", strip=True)
+
+                                # If we found both label and value, add them
+                                if label and value and label != section_title:
+                                    fee_items[label] = value
+
+                        # Add the section if we found any fee items
+                        if fee_items:
+                            info[section_title] = fee_items
 
         # Fallback: try the old structure
         if not info:
