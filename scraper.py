@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import json
+import re
 from datetime import datetime
 from typing import List, Dict, Any
 import time
@@ -521,28 +522,15 @@ class ApplyBoardScraper(WebScraper):
         # Wait a bit before loading the detail page (to avoid rate limiting)
         time.sleep(2)
 
-        # Visit detail page with Selenium
-        detail_soup = self.fetch_detail_page_with_js(url)
-        if not detail_soup:
-            print(f"Failed to load detail page: {url}")
-            return {}
-
-        # Extract all required fields from detail page
-        program.update(self.extract_program_detail(detail_soup))
-
-        # Add program URL for reference
-        program["program_url"] = url
-
-        return program
-
-    def fetch_detail_page_with_js(self, url: str) -> BeautifulSoup:
+        # Visit detail page with Selenium and keep driver open for scholarship extraction
         driver = self.setup_driver()
         if not driver:
-            return None
+            print(f"Failed to setup driver for: {url}")
+            return {}
 
         try:
             driver.get(url)
-            # Try to wait for a unique element that always appears on the detail page
+            # Wait for main content
             try:
                 WebDriverWait(driver, 20).until(
                     EC.presence_of_element_located(
@@ -550,121 +538,313 @@ class ApplyBoardScraper(WebScraper):
                     )
                 )
             except TimeoutException:
-                print("⚠️ Timeout waiting for main content, continuing anyway...")
+                print("⚠️ Timeout waiting for main content")
+                driver.quit()
+                return {}
 
-            # Click 'Show More' buttons for program summary and other sections
-            try:
-                # Find all "Show More" buttons on the page
-                show_more_buttons = driver.find_elements(
-                    By.XPATH, "//button[.//p[contains(text(),'Show More')]]"
-                )
-                print(f"   Found {len(show_more_buttons)} 'Show More' buttons...")
+            # Expand all sections
+            self.expand_page_sections(driver)
 
-                clicked_count = 0
-                for button in show_more_buttons:
-                    try:
-                        if button.is_displayed():
-                            # Scroll to button to ensure it's visible
-                            driver.execute_script(
-                                "arguments[0].scrollIntoView(true);", button
-                            )
-                            time.sleep(0.5)
-                            # Click the button
-                            driver.execute_script("arguments[0].click();", button)
-                            clicked_count += 1
-                            time.sleep(1)  # Wait for content to expand
-                    except Exception as e:
-                        print(f"   Could not click Show More button: {e}")
-                        continue
+            # Get page source for BeautifulSoup parsing
+            detail_soup = BeautifulSoup(driver.page_source, "lxml")
 
-                if clicked_count > 0:
-                    print(f"   ✓ Clicked {clicked_count} 'Show More' buttons")
-            except Exception as e:
-                print(f"   ⚠️  Error with Show More buttons: {e}")
-                pass  # Continue even if no Show More buttons found
+            # Extract all required fields from detail page
+            program.update(self.extract_program_detail(detail_soup))
 
-            # Wait for Program Intakes section to be present
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, "//p[text()='Program Intakes']")
-                    )
-                )
-                print("   ✓ Program Intakes section found")
-            except TimeoutException:
-                print("   ⚠️  Program Intakes section not found")
+            # Extract scholarships using Selenium (carousel navigation needed)
+            scholarships = self.extract_scholarships(driver)
+            program["scholarships"] = scholarships
 
-            # Wait a bit for the page to stabilize
-            time.sleep(2)
+            # Add program URL for reference
+            program["program_url"] = url
 
-            # Expand all program intake sections and admission requirements
-            try:
-                # Find all expand buttons (aria-label="show more")
-                expand_buttons = driver.find_elements(
-                    By.CSS_SELECTOR, "button[aria-label='show more']"
-                )
-                print(f"   Found {len(expand_buttons)} sections to expand...")
-
-                expanded_count = 0
-                for button in expand_buttons:
-                    try:
-                        # Check if button is not already expanded
-                        is_expanded = button.get_attribute("aria-expanded")
-                        if is_expanded == "false":
-                            # Scroll to button to make sure it's visible
-                            driver.execute_script(
-                                "arguments[0].scrollIntoView(true);", button
-                            )
-                            time.sleep(0.3)
-                            # Click the button
-                            driver.execute_script("arguments[0].click();", button)
-                            expanded_count += 1
-                            time.sleep(0.5)  # Small delay between clicks
-                    except Exception as e:
-                        print(f"   Could not click expand button: {e}")
-                        continue
-
-                print(f"   ✓ Expanded {expanded_count} sections")
-            except Exception as e:
-                print(f"   ⚠️  Could not expand sections: {e}")
-
-            # Expand nationality-specific accordion sections in Admission Requirements
-            try:
-                # Find all accordion expand buttons
-                accordion_buttons = driver.find_elements(
-                    By.CSS_SELECTOR, "div.MuiAccordionSummary-root"
-                )
-                print(f"   Found {len(accordion_buttons)} accordion sections...")
-
-                expanded_accordions = 0
-                for button in accordion_buttons:
-                    try:
-                        # Check if it's not already expanded
-                        aria_expanded = button.get_attribute("aria-expanded")
-                        if aria_expanded == "false":
-                            # Scroll to button
-                            driver.execute_script(
-                                "arguments[0].scrollIntoView(true);", button
-                            )
-                            time.sleep(0.3)
-                            # Click the accordion
-                            driver.execute_script("arguments[0].click();", button)
-                            expanded_accordions += 1
-                            time.sleep(0.5)
-                    except Exception as e:
-                        print(f"   Could not expand accordion: {e}")
-                        continue
-
-                print(f"   ✓ Expanded {expanded_accordions} accordion sections")
-            except Exception as e:
-                print(f"   ⚠️  Could not expand accordions: {e}")
-
-            # Wait for dynamic content to expand
-            time.sleep(2)
-            return BeautifulSoup(driver.page_source, "lxml")
         except Exception as e:
-            print(f"Error loading detail page: {e}")
-            return None
+            print(f"Error scraping program detail: {e}")
+        finally:
+            driver.quit()
+
+        return program
+
+    def expand_page_sections(self, driver):
+        """Expand all collapsible sections on the page."""
+        # Click 'Show More' buttons
+        try:
+            show_more_buttons = driver.find_elements(
+                By.XPATH, "//button[.//p[contains(text(),'Show More')]]"
+            )
+            print(f"   Found {len(show_more_buttons)} 'Show More' buttons...")
+
+            clicked_count = 0
+            for button in show_more_buttons:
+                try:
+                    if button.is_displayed():
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView(true);", button
+                        )
+                        time.sleep(0.5)
+                        driver.execute_script("arguments[0].click();", button)
+                        clicked_count += 1
+                        time.sleep(1)
+                except Exception as e:
+                    continue
+
+            if clicked_count > 0:
+                print(f"   ✓ Clicked {clicked_count} 'Show More' buttons")
+        except Exception as e:
+            print(f"   ⚠️  Error with Show More buttons: {e}")
+
+        # Expand language test sections
+        try:
+            language_test_buttons = driver.find_elements(
+                By.CSS_SELECTOR, "button[aria-expanded='false']"
+            )
+            print(f"   Found {len(language_test_buttons)} collapsed sections...")
+
+            lang_expanded_count = 0
+            for button in language_test_buttons:
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView(true);", button)
+                    time.sleep(0.3)
+                    driver.execute_script("arguments[0].click();", button)
+                    lang_expanded_count += 1
+                    time.sleep(0.5)
+                except Exception as e:
+                    continue
+
+            if lang_expanded_count > 0:
+                print(f"   ✓ Expanded {lang_expanded_count} collapsed sections")
+                time.sleep(1)
+        except Exception as e:
+            print(f"   ⚠️  Error expanding sections: {e}")
+
+        # Expand other accordions
+        try:
+            expand_buttons = driver.find_elements(
+                By.CSS_SELECTOR, "button[aria-label='show more']"
+            )
+            print(f"   Found {len(expand_buttons)} sections to expand...")
+
+            expanded_count = 0
+            for button in expand_buttons:
+                try:
+                    is_expanded = button.get_attribute("aria-expanded")
+                    if is_expanded == "false":
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView(true);", button
+                        )
+                        time.sleep(0.3)
+                        driver.execute_script("arguments[0].click();", button)
+                        expanded_count += 1
+                        time.sleep(0.5)
+                except Exception as e:
+                    continue
+
+            if expanded_count > 0:
+                print(f"   ✓ Expanded {expanded_count} more sections")
+        except Exception as e:
+            print(f"   ⚠️  Error expanding sections: {e}")
+
+        time.sleep(2)
+
+    def extract_scholarships(self, driver) -> List[Dict[str, Any]]:
+        """
+        Extract all scholarships from the carousel by clicking through them.
+
+        Args:
+            driver: Selenium WebDriver instance
+
+        Returns:
+            List of scholarship dictionaries
+        """
+        scholarships = []
+
+        try:
+            # Find the scholarships section
+            scholarships_section = driver.find_elements(
+                By.CSS_SELECTOR, "section[aria-label='Scholarships']"
+            )
+
+            if not scholarships_section:
+                print("   ℹ️  No scholarships section found")
+                return scholarships
+
+            print("   Found scholarships section, extracting...")
+
+            # Scroll to scholarships section
+            driver.execute_script(
+                "arguments[0].scrollIntoView(true);", scholarships_section[0]
+            )
+            time.sleep(1)
+
+            # Track seen scholarship names to detect loop
+            seen_scholarships = set()
+            max_iterations = 20  # Safety limit
+            iteration = 0
+
+            while iteration < max_iterations:
+                # Get current visible scholarship articles
+                soup = BeautifulSoup(driver.page_source, "lxml")
+                articles = soup.select('section[aria-label="Scholarships"] article')
+
+                if not articles:
+                    break
+
+                # Extract data from visible scholarships
+                new_scholarship_found = False
+
+                for article in articles:
+                    # Check if this article is visible (not aria-hidden="true")
+                    parent_group = article.find_parent("div", attrs={"role": "group"})
+                    if parent_group and parent_group.get("aria-hidden") == "true":
+                        continue
+
+                    scholarship = {}
+
+                    # Extract scholarship name
+                    name_elem = article.find(
+                        "div", class_=lambda x: x and "css-1ts3v3l" in x if x else False
+                    )
+                    if name_elem:
+                        scholarship["name"] = name_elem.get_text(strip=True)
+                    else:
+                        continue
+
+                    # Skip if we've already seen this scholarship
+                    if scholarship["name"] in seen_scholarships:
+                        continue
+
+                    new_scholarship_found = True
+                    seen_scholarships.add(scholarship["name"])
+
+                    # Extract university
+                    uni_elem = article.find(
+                        "div", class_=lambda x: x and "css-13llmdu" in x if x else False
+                    )
+                    if uni_elem:
+                        scholarship["university"] = uni_elem.get_text(strip=True)
+
+                    # Extract amount
+                    amount_elem = article.find(
+                        "div", class_=lambda x: x and "css-koraoo" in x if x else False
+                    )
+                    if amount_elem:
+                        scholarship["amount"] = amount_elem.get_text(strip=True)
+
+                    # Extract auto-applied status
+                    auto_applied_containers = article.find_all(
+                        "div", class_=lambda x: x and "css-1uqoi5f" in x if x else False
+                    )
+                    for container in auto_applied_containers:
+                        label = container.find(
+                            "div",
+                            class_=lambda x: x and "css-f5mcgk" in x if x else False,
+                        )
+                        if label and "Auto applied" in label.get_text():
+                            value = container.find_next_sibling(
+                                "div",
+                                class_=lambda x: (
+                                    x and "css-1uqoi5f" in x if x else False
+                                ),
+                            )
+                            if value:
+                                value_div = value.find(
+                                    "div",
+                                    class_=lambda x: (
+                                        x and "css-koraoo" in x if x else False
+                                    ),
+                                )
+                                if value_div:
+                                    scholarship["auto_applied"] = value_div.get_text(
+                                        strip=True
+                                    )
+                            break
+
+                    # Extract eligible nationalities
+                    info_rows = article.find_all(
+                        "div", class_=lambda x: x and "css-wpicwe" in x if x else False
+                    )
+                    for row in info_rows:
+                        label_div = row.find(
+                            "div",
+                            class_=lambda x: x and "css-f5mcgk" in x if x else False,
+                        )
+                        if label_div:
+                            label_text = label_div.get_text(strip=True)
+
+                            if "Eligible nationalities" in label_text:
+                                value_div = row.find(
+                                    "div",
+                                    class_=lambda x: (
+                                        x and "css-a1smrc" in x if x else False
+                                    ),
+                                )
+                                if value_div:
+                                    scholarship["eligible_nationalities"] = (
+                                        value_div.get_text(strip=True)
+                                    )
+
+                            elif "Eligible program levels" in label_text:
+                                value_div = row.find(
+                                    "div",
+                                    class_=lambda x: (
+                                        x and "css-a1smrc" in x if x else False
+                                    ),
+                                )
+                                if value_div:
+                                    scholarship["eligible_program_levels"] = (
+                                        value_div.get_text(strip=True)
+                                    )
+
+                    # Extract "Learn more" URL
+                    learn_more_link = article.find(
+                        "a", class_=lambda x: x and "css-nxm9rc" in x if x else False
+                    )
+                    if learn_more_link:
+                        href = learn_more_link.get("href", "")
+                        if href:
+                            if href.startswith("/"):
+                                scholarship["learn_more_url"] = (
+                                    f"https://www.applyboard.com{href}"
+                                )
+                            else:
+                                scholarship["learn_more_url"] = href
+
+                    scholarships.append(scholarship)
+                    print(f"   ✓ Extracted scholarship: {scholarship['name']}")
+
+                # If no new scholarships found, we've looped back
+                if not new_scholarship_found:
+                    print(
+                        f"   ✓ Extracted all {len(scholarships)} scholarships (detected loop)"
+                    )
+                    break
+
+                # Try to click the "Next" button
+                try:
+                    next_button = driver.find_element(
+                        By.CSS_SELECTOR, "button[aria-label*='Next']"
+                    )
+
+                    # Check if button is enabled
+                    if next_button.is_enabled():
+                        driver.execute_script("arguments[0].click();", next_button)
+                        time.sleep(1.5)  # Wait for carousel animation
+                        iteration += 1
+                    else:
+                        print("   ℹ️  Next button disabled, reached end")
+                        break
+
+                except Exception as e:
+                    print(f"   ℹ️  No more scholarships to navigate: {e}")
+                    break
+
+            if iteration >= max_iterations:
+                print(f"   ⚠️  Reached max iterations ({max_iterations})")
+
+        except Exception as e:
+            print(f"   ⚠️  Error extracting scholarships: {e}")
+
+        return scholarships
 
     def extract_program_detail(self, soup: BeautifulSoup) -> Dict[str, Any]:
         """
@@ -1046,7 +1226,7 @@ class ApplyBoardScraper(WebScraper):
 
                 requirements["academic_background"] = academic_bg
 
-                # Extract Language Test Scores
+                # Extract Language Test Scores - DYNAMIC extraction for all tests
                 language_tests = {}
 
                 # Find "Minimum Language Test Scores" section
@@ -1054,87 +1234,150 @@ class ApplyBoardScraper(WebScraper):
                     "p", string="Minimum Language Test Scores"
                 )
                 if lang_section:
+                    print("   Found 'Minimum Language Test Scores' section")
                     # Find the container that holds all language tests
                     lang_container = lang_section.find_next("div", class_="MuiBox-root")
 
                     if lang_container:
-                        # Find IELTS
-                        ielts_label = lang_container.find("p", string="IELTS")
-                        if ielts_label:
-                            # Get the parent container and then find the collapse section
-                            parent_div = ielts_label.find_parent("div")
-                            if parent_div:
-                                collapse = parent_div.find_next(
-                                    "div", class_="MuiCollapse-root"
-                                )
-                                if collapse:
-                                    # Find the value - it should be after the hr divider
-                                    ielts_value = collapse.find(
-                                        "p", class_="MuiTypography-root"
-                                    )
-                                    if ielts_value:
-                                        language_tests["IELTS"] = ielts_value.get_text(
-                                            strip=True
-                                        )
+                        # Find ALL language test containers dynamically
+                        # Look for divs with the specific class pattern that contains test names
+                        test_containers = lang_container.find_all(
+                            "div",
+                            class_=lambda x: x and "css-19x5vgl" in x if x else False,
+                        )
 
-                        # Find TOEFL
-                        toefl_label = lang_container.find("p", string="TOEFL")
-                        if toefl_label:
-                            parent_div = toefl_label.find_parent("div")
-                            if parent_div:
-                                collapse = parent_div.find_next(
-                                    "div", class_="MuiCollapse-root"
-                                )
-                                if collapse:
-                                    toefl_value = collapse.find(
-                                        "p", class_="MuiTypography-root"
-                                    )
-                                    if toefl_value:
-                                        language_tests["TOEFL"] = toefl_value.get_text(
-                                            strip=True
-                                        )
+                        print(
+                            f"   Found {len(test_containers)} language test containers"
+                        )
 
-                        # Find DUOLINGO
-                        duolingo_label = lang_container.find("p", string="DUOLINGO")
-                        if duolingo_label:
-                            parent_div = duolingo_label.find_parent("div")
-                            if parent_div:
-                                collapse = parent_div.find_next(
-                                    "div", class_="MuiCollapse-root"
+                        for test_container in test_containers:
+                            # Find the test name (e.g., "IELTS", "TOEFL", "PTE", "DUOLINGO")
+                            # Look for the first MuiBox-root that contains the test label
+                            label_box = test_container.find(
+                                "div", class_="MuiBox-root", recursive=False
+                            )
+
+                            if label_box:
+                                test_label_p = label_box.find(
+                                    "p", class_="MuiTypography-root"
                                 )
-                                if collapse:
-                                    # Find the overall score first
-                                    duolingo_overall = collapse.find(
-                                        "p", class_="MuiTypography-root"
+
+                                if test_label_p:
+                                    test_name = test_label_p.get_text(strip=True)
+
+                                    # Skip if it's not a test name
+                                    if not test_name or test_name in [
+                                        "Show More",
+                                        "Show Less",
+                                    ]:
+                                        continue
+
+                                    print(f"   Processing language test: {test_name}")
+
+                                    # Find the collapse section with the test score
+                                    # Look for MuiCollapse-root that should now be expanded
+                                    collapse = test_container.find(
+                                        "div",
+                                        class_=lambda x: (
+                                            x and "MuiCollapse-root" in x
+                                            if x
+                                            else False
+                                        ),
                                     )
-                                    if duolingo_overall:
-                                        duolingo_data = {
-                                            "overall": duolingo_overall.get_text(
-                                                strip=True
+
+                                    if collapse:
+                                        # Check if collapse is entered (expanded)
+                                        # The content should be in MuiCollapse-wrapper
+                                        wrapper = collapse.find(
+                                            "div", class_="MuiCollapse-wrapper"
+                                        )
+                                        if wrapper:
+                                            # Find the wrapperInner which contains the actual content
+                                            inner = wrapper.find(
+                                                "div", class_="MuiCollapse-wrapperInner"
                                             )
-                                        }
+                                            if inner:
+                                                # Find all paragraphs in the inner section
+                                                all_paragraphs = inner.find_all(
+                                                    "p", class_="MuiTypography-root"
+                                                )
 
-                                        # Extract detailed scores (Comprehension, Production, etc.)
-                                        # Look for nested MuiBox-root divs with pairs of labels and values
-                                        detail_boxes = collapse.find_all(
-                                            "div", class_="MuiBox-root"
-                                        )
-                                        for box in detail_boxes:
-                                            all_p = box.find_all(
-                                                "p", class_="MuiTypography-root"
+                                                # The score should be in one of these paragraphs
+                                                # Look for the one with class containing "fPdfYJ" or similar
+                                                test_value = None
+                                                for p in all_paragraphs:
+                                                    text = p.get_text(strip=True)
+                                                    # Skip empty or non-score text
+                                                    if text and text not in ["", " "]:
+                                                        test_value = p
+                                                        break
+
+                                                if test_value:
+                                                    value_text = test_value.get_text(
+                                                        strip=True
+                                                    )
+                                                    print(
+                                                        f"   ✓ Extracted {test_name}: {value_text}"
+                                                    )
+
+                                                    # Check if this is DUOLINGO (has detailed scores)
+                                                    if test_name.upper() == "DUOLINGO":
+                                                        duolingo_data = {
+                                                            "overall": value_text
+                                                        }
+
+                                                        # Extract detailed scores
+                                                        detail_boxes = inner.find_all(
+                                                            "div", class_="MuiBox-root"
+                                                        )
+                                                        for box in detail_boxes:
+                                                            all_p = box.find_all(
+                                                                "p",
+                                                                class_="MuiTypography-root",
+                                                            )
+                                                            if len(all_p) >= 2:
+                                                                label = all_p[
+                                                                    0
+                                                                ].get_text(strip=True)
+                                                                value = all_p[
+                                                                    1
+                                                                ].get_text(strip=True)
+                                                                if label in [
+                                                                    "Comprehension",
+                                                                    "Production",
+                                                                    "Conversation",
+                                                                    "Literacy",
+                                                                ]:
+                                                                    duolingo_data[
+                                                                        label.lower()
+                                                                    ] = value
+
+                                                        language_tests[test_name] = (
+                                                            duolingo_data
+                                                        )
+                                                    else:
+                                                        # For other tests, just store the overall score
+                                                        language_tests[test_name] = (
+                                                            value_text
+                                                        )
+                                                else:
+                                                    print(
+                                                        f"   ⚠️  Could not find test value for {test_name}"
+                                                    )
+                                            else:
+                                                print(
+                                                    f"   ⚠️  Could not find wrapperInner for {test_name}"
+                                                )
+                                        else:
+                                            print(
+                                                f"   ⚠️  Could not find wrapper for {test_name}"
                                             )
-                                            if len(all_p) >= 2:
-                                                label = all_p[0].get_text(strip=True)
-                                                value = all_p[1].get_text(strip=True)
-                                                if label in [
-                                                    "Comprehension",
-                                                    "Production",
-                                                    "Conversation",
-                                                    "Literacy",
-                                                ]:
-                                                    duolingo_data[label.lower()] = value
-
-                                        language_tests["DUOLINGO"] = duolingo_data
+                                    else:
+                                        print(
+                                            f"   ⚠️  Could not find collapse section for {test_name}"
+                                        )
+                else:
+                    print("   ⚠️  'Minimum Language Test Scores' section not found")
 
                 requirements["language_tests"] = language_tests
 
@@ -1247,6 +1490,57 @@ class ApplyBoardScraper(WebScraper):
                                     }
                                 )
 
+                # Check for "conditional admissions" requirements
+                conditional_label = main_container.find(
+                    "p",
+                    string="This program offers conditional admissions",
+                )
+                if conditional_label:
+                    # Find the parent container
+                    parent_div = conditional_label.find_parent("div")
+                    if parent_div:
+                        collapse = parent_div.find_next(
+                            "div", class_="MuiCollapse-root"
+                        )
+                        if collapse:
+                            # Look for the conditional admission text
+                            conditional_text_elem = collapse.find(
+                                "span",
+                                attrs={
+                                    "data-testid": "conditional-admission-require-elp"
+                                },
+                            )
+                            if conditional_text_elem:
+                                # Get the full text including list items
+                                conditional_text = conditional_text_elem.get_text(
+                                    " ", strip=True
+                                )
+
+                                # Also try to extract structured data from list items
+                                conditional_details = []
+                                list_items = conditional_text_elem.find_all(
+                                    "li", attrs={"data-testid": True}
+                                )
+
+                                for li in list_items:
+                                    testid = li.get("data-testid", "")
+                                    text = li.get_text(strip=True)
+                                    conditional_details.append(
+                                        {"test_type": testid, "requirement": text}
+                                    )
+
+                                additional_reqs.append(
+                                    {
+                                        "type": "conditional_admission",
+                                        "description": conditional_text,
+                                        "details": (
+                                            conditional_details
+                                            if conditional_details
+                                            else None
+                                        ),
+                                    }
+                                )
+
                 requirements["additional_requirements"] = additional_reqs
 
                 # Extract disclaimer
@@ -1297,6 +1591,10 @@ class ApplyBoardScraper(WebScraper):
                         program_features.append(feature_text)
 
         data["program_features"] = program_features
+
+        # Extract Scholarships - this needs to be done with Selenium for carousel navigation
+        # We'll add a placeholder here and extract it in the scraping function
+        data["scholarships"] = []
 
         return data
 
