@@ -625,36 +625,61 @@ class ApplyBoardScraper(WebScraper):
         except Exception as e:
             print(f"   ⚠️  Error with Show More buttons: {e}")
 
-        # Expand language test sections
+        # Expand language test sections - iterate multiple times to ensure all nested sections expand
         try:
-            language_test_buttons = driver.find_elements(
-                By.CSS_SELECTOR, "button[aria-expanded='false']"
-            )
-            print(f"   Found {len(language_test_buttons)} collapsed sections...")
+            max_iterations = 3  # Try expanding up to 3 times
+            total_expanded = 0
 
-            lang_expanded_count = 0
-            for button in language_test_buttons:
-                try:
-                    driver.execute_script("arguments[0].scrollIntoView(true);", button)
-                    time.sleep(0.3)
-                    driver.execute_script("arguments[0].click();", button)
-                    lang_expanded_count += 1
-                    time.sleep(0.5)
-                except Exception as e:
-                    continue
+            for iteration in range(max_iterations):
+                language_test_buttons = driver.find_elements(
+                    By.CSS_SELECTOR, "button[aria-expanded='false']"
+                )
 
-            if lang_expanded_count > 0:
-                print(f"   ✓ Expanded {lang_expanded_count} collapsed sections")
-                time.sleep(1)
+                if iteration == 0:
+                    print(
+                        f"   Found {len(language_test_buttons)} collapsed sections..."
+                    )
+
+                if len(language_test_buttons) == 0:
+                    break  # All sections are expanded
+
+                lang_expanded_count = 0
+                for button in language_test_buttons:
+                    try:
+                        # Check if button is visible
+                        if not button.is_displayed():
+                            continue
+
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView(true);", button
+                        )
+                        time.sleep(0.3)
+                        driver.execute_script("arguments[0].click();", button)
+                        lang_expanded_count += 1
+                        total_expanded += 1
+                        time.sleep(0.5)
+                    except Exception as e:
+                        continue
+
+                if lang_expanded_count > 0:
+                    print(
+                        f"   ✓ Expanded {lang_expanded_count} sections (iteration {iteration + 1})"
+                    )
+                    time.sleep(1)  # Wait for animations and nested content to load
+                else:
+                    break  # No more sections to expand
+
+            if total_expanded > 0:
+                print(f"   ✓ Total expanded: {total_expanded} sections")
         except Exception as e:
             print(f"   ⚠️  Error expanding sections: {e}")
 
-        # Expand other accordions
+        # Expand other accordions (aria-label='show more')
         try:
             expand_buttons = driver.find_elements(
                 By.CSS_SELECTOR, "button[aria-label='show more']"
             )
-            print(f"   Found {len(expand_buttons)} sections to expand...")
+            print(f"   Found {len(expand_buttons)} sections with 'show more' label...")
 
             expanded_count = 0
             for button in expand_buttons:
@@ -676,7 +701,20 @@ class ApplyBoardScraper(WebScraper):
         except Exception as e:
             print(f"   ⚠️  Error expanding sections: {e}")
 
+        # Final wait to ensure all animations complete and DOM is fully updated
         time.sleep(2)
+
+        # Verify language test sections are expanded
+        try:
+            remaining_collapsed = driver.find_elements(
+                By.CSS_SELECTOR, "button[aria-expanded='false']"
+            )
+            if len(remaining_collapsed) > 0:
+                print(
+                    f"   ℹ️  Note: {len(remaining_collapsed)} sections still collapsed"
+                )
+        except:
+            pass
 
     def extract_scholarships(self, driver) -> List[Dict[str, Any]]:
         """
