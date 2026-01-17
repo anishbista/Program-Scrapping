@@ -335,9 +335,13 @@ class ApplyBoardScraper(WebScraper):
     def close_driver(self):
         """Close the Selenium WebDriver."""
         if self.driver:
-            self.driver.quit()
-            self.driver = None
-            print("🔒 Browser closed")
+            try:
+                self.driver.quit()
+            except Exception as e:
+                print(f"⚠️ Error closing driver: {e}")
+            finally:
+                self.driver = None
+                print("🔒 Browser closed")
 
     def get_study_destinations(self) -> Dict[str, str]:
         """
@@ -522,10 +526,10 @@ class ApplyBoardScraper(WebScraper):
         # Wait a bit before loading the detail page (to avoid rate limiting)
         time.sleep(2)
 
-        # Visit detail page with Selenium and keep driver open for scholarship extraction
-        driver = self.setup_driver()
+        # Use existing driver instead of creating new one
+        driver = self.driver
         if not driver:
-            print(f"Failed to setup driver for: {url}")
+            print(f"Failed to access driver for: {url}")
             return {}
 
         try:
@@ -539,7 +543,6 @@ class ApplyBoardScraper(WebScraper):
                 )
             except TimeoutException:
                 print("⚠️ Timeout waiting for main content")
-                driver.quit()
                 return {}
 
             # Expand all sections
@@ -560,8 +563,7 @@ class ApplyBoardScraper(WebScraper):
 
         except Exception as e:
             print(f"Error scraping program detail: {e}")
-        finally:
-            driver.quit()
+            # Don't quit driver here - let scrape_programs_from_urls manage it
 
         return program
 
@@ -1730,20 +1732,35 @@ class ApplyBoardScraper(WebScraper):
 
         all_programs = []
 
+        # Ensure driver is set up once before scraping all programs
+        if not self.driver:
+            self.setup_driver()
+
         for idx, url in enumerate(program_urls, 1):
             print(f"📖 Scraping program {idx}/{len(program_urls)}...")
             print(f"   URL: {url}")
 
-            program = self.scrape_program_detail_from_url(url)
-            if program:
-                all_programs.append(program)
-                # Show a preview of what was scraped
-                program_name = program.get("university_info", {}).get(
-                    "university_name", "Unknown"
-                )
-                print(f"   ✓ Scraped: {program_name}")
-            else:
-                print(f"   ✗ Failed to scrape this program")
+            try:
+                program = self.scrape_program_detail_from_url(url)
+                if program and program.get("program_name"):  # Verify we got actual data
+                    all_programs.append(program)
+                    # Show a preview of what was scraped
+                    program_name = program.get("university_info", {}).get(
+                        "university_name", "Unknown"
+                    )
+                    print(f"   ✓ Scraped: {program_name}")
+                else:
+                    print(f"   ✗ Failed to scrape this program (no data returned)")
+            except Exception as e:
+                print(f"   ✗ Exception while scraping: {e}")
+                # If driver crashed, try to recover
+                if (
+                    "invalid session id" in str(e).lower()
+                    or "connection" in str(e).lower()
+                ):
+                    print("   🔧 Driver issue detected, restarting driver...")
+                    self.close_driver()
+                    self.setup_driver()
 
             # Show progress
             print(
