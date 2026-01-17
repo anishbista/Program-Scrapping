@@ -1363,43 +1363,77 @@ class ApplyBoardScraper(WebScraper):
                                                         f"   ✓ Extracted {test_name}: {value_text}"
                                                     )
 
-                                                    # Check if this is DUOLINGO (has detailed scores)
-                                                    if test_name.upper() == "DUOLINGO":
-                                                        duolingo_data = {
-                                                            "overall": value_text
-                                                        }
+                                                    # Check if this test has detailed sub-scores
+                                                    # Extract ALL subscores dynamically (don't rely on specific names)
+                                                    detail_boxes = inner.find_all(
+                                                        "div", class_="MuiBox-root"
+                                                    )
 
-                                                        # Extract detailed scores
-                                                        detail_boxes = inner.find_all(
-                                                            "div", class_="MuiBox-root"
+                                                    subscores = {}
+                                                    for box in detail_boxes:
+                                                        all_p = box.find_all(
+                                                            "p",
+                                                            class_="MuiTypography-root",
                                                         )
-                                                        for box in detail_boxes:
-                                                            all_p = box.find_all(
-                                                                "p",
-                                                                class_="MuiTypography-root",
+                                                        if len(all_p) >= 2:
+                                                            label = all_p[0].get_text(
+                                                                strip=True
                                                             )
-                                                            if len(all_p) >= 2:
-                                                                label = all_p[
-                                                                    0
-                                                                ].get_text(strip=True)
-                                                                value = all_p[
-                                                                    1
-                                                                ].get_text(strip=True)
-                                                                if label in [
-                                                                    "Comprehension",
-                                                                    "Production",
-                                                                    "Conversation",
-                                                                    "Literacy",
-                                                                ]:
-                                                                    duolingo_data[
+                                                            value = all_p[1].get_text(
+                                                                strip=True
+                                                            )
+
+                                                            # Filter out non-subscore elements
+                                                            # Skip if label is empty, or matches known non-score text
+                                                            skip_labels = [
+                                                                "Show More",
+                                                                "Show Less",
+                                                                "",
+                                                                " ",
+                                                                test_name,  # Don't add test name itself
+                                                            ]
+
+                                                            # Skip if value doesn't look like a score
+                                                            # (should have numbers, not be too long)
+                                                            if (
+                                                                label
+                                                                and value
+                                                                and label
+                                                                not in skip_labels
+                                                                and len(value)
+                                                                < 20  # Scores are short
+                                                                and not label.startswith(
+                                                                    "Minimum"
+                                                                )
+                                                                and not label.startswith(
+                                                                    "This program"
+                                                                )
+                                                            ):
+                                                                # Check if value looks numeric or score-like
+                                                                # (contains digits or common score patterns)
+                                                                if any(
+                                                                    char.isdigit()
+                                                                    for char in value
+                                                                ):
+                                                                    subscores[
                                                                         label.lower()
                                                                     ] = value
+                                                                    print(
+                                                                        f"   ✓ {test_name} - {label}: {value}"
+                                                                    )
 
+                                                    # If we found subscores, store as dict with overall + subscores
+                                                    # Otherwise, just store the overall score as a string
+                                                    if subscores:
+                                                        test_data = {
+                                                            "overall": value_text,
+                                                            **subscores,  # Merge all subscores
+                                                        }
                                                         language_tests[test_name] = (
-                                                            duolingo_data
+                                                            test_data
                                                         )
                                                     else:
-                                                        # For other tests, just store the overall score
+                                                        # No subscores found, just store overall score
                                                         language_tests[test_name] = (
                                                             value_text
                                                         )
