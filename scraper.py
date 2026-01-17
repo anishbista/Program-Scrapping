@@ -851,7 +851,18 @@ class ApplyBoardScraper(WebScraper):
         Extract all required fields from the program detail page soup.
         """
         data = {}
-
+        # Program Name
+        program_name = ""
+        # Look for the program name in the header section
+        # The program name is in a <p> tag with specific styling
+        program_name_tag = soup.find(
+            "p",
+            class_=lambda x: x and "MuiTypography-root" in x if x else False,
+            attrs={"role": "heading"},
+        )
+        if program_name_tag:
+            program_name = program_name_tag.get_text(strip=True)
+        data["program_name"] = program_name
         # Program Summary
         summary = ""
         # Look for the section with "Program Summary" heading
