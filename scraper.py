@@ -159,7 +159,7 @@ class ApplyBoardScraper(WebScraper):
         try:
             print("🔧 Setting up Firefox WebDriver...")
             options = FirefoxOptions()
-            options.add_argument("--headless")  # Run in background
+            # options.add_argument("--headless")  # Run in background
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             self.driver = webdriver.Firefox(options=options)
@@ -170,7 +170,7 @@ class ApplyBoardScraper(WebScraper):
             try:
                 print("🔧 Trying Chrome WebDriver...")
                 options = ChromeOptions()
-                options.add_argument("--headless")
+                # options.add_argument("--headless")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 self.driver = webdriver.Chrome(options=options)
@@ -552,16 +552,36 @@ class ApplyBoardScraper(WebScraper):
             except TimeoutException:
                 print("⚠️ Timeout waiting for main content, continuing anyway...")
 
-            # Click 'Show More' for program summary if present
+            # Click 'Show More' buttons for program summary and other sections
             try:
-                show_more_btn = driver.find_element(
+                # Find all "Show More" buttons on the page
+                show_more_buttons = driver.find_elements(
                     By.XPATH, "//button[.//p[contains(text(),'Show More')]]"
                 )
-                if show_more_btn.is_displayed():
-                    driver.execute_script("arguments[0].click();", show_more_btn)
-                    time.sleep(2)
-            except Exception:
-                pass  # No show more button
+                print(f"   Found {len(show_more_buttons)} 'Show More' buttons...")
+
+                clicked_count = 0
+                for button in show_more_buttons:
+                    try:
+                        if button.is_displayed():
+                            # Scroll to button to ensure it's visible
+                            driver.execute_script(
+                                "arguments[0].scrollIntoView(true);", button
+                            )
+                            time.sleep(0.5)
+                            # Click the button
+                            driver.execute_script("arguments[0].click();", button)
+                            clicked_count += 1
+                            time.sleep(1)  # Wait for content to expand
+                    except Exception as e:
+                        print(f"   Could not click Show More button: {e}")
+                        continue
+
+                if clicked_count > 0:
+                    print(f"   ✓ Clicked {clicked_count} 'Show More' buttons")
+            except Exception as e:
+                print(f"   ⚠️  Error with Show More buttons: {e}")
+                pass  # Continue even if no Show More buttons found
 
             # Wait for Program Intakes section to be present
             try:
@@ -664,9 +684,69 @@ class ApplyBoardScraper(WebScraper):
                 "div", class_="MuiCard-root"
             )
             if summary_card:
-                # Get all paragraph tags within this card
-                p_tags = summary_card.find_all("p")
-                summary = " ".join(p.get_text(" ", strip=True) for p in p_tags)
+                # Find the container that holds all the content (including expanded content)
+                # Look for the div with class containing "jss" that holds the actual content
+                content_div = summary_card.find(
+                    "div", class_=lambda x: x and "jss" in x if x else False
+                )
+
+                if content_div:
+                    # Instead of manually parsing tags, get all meaningful text
+                    # We'll extract text from specific elements to preserve structure
+                    summary_parts = []
+
+                    # Find the innermost div that contains the actual content (skip the outer wrapper)
+                    actual_content = content_div.find("div")
+                    if not actual_content:
+                        actual_content = content_div
+
+                    # Process all direct children and their text
+                    def extract_text_recursive(element, parts_list):
+                        """Recursively extract text while preserving structure"""
+                        for child in element.children:
+                            if child.name == "p":
+                                # Get text from paragraph
+                                text = child.get_text(" ", strip=True)
+                                if text and text not in parts_list:
+                                    parts_list.append(text)
+                            elif child.name == "div":
+                                # Check if this div has direct text (not in children)
+                                direct_text = ""
+                                for content in child.children:
+                                    if isinstance(content, str):
+                                        text_part = content.strip()
+                                        if text_part:
+                                            direct_text += text_part + " "
+                                if (
+                                    direct_text.strip()
+                                    and direct_text.strip() not in parts_list
+                                ):
+                                    parts_list.append(direct_text.strip())
+                                # Recurse into the div
+                                extract_text_recursive(child, parts_list)
+                            elif child.name == "ul":
+                                # Process list
+                                for li in child.find_all("li", recursive=False):
+                                    text = li.get_text(" ", strip=True)
+                                    if text and ("• " + text) not in parts_list:
+                                        parts_list.append("• " + text)
+                            elif child.name == "li":
+                                # Individual list item
+                                text = child.get_text(" ", strip=True)
+                                if text and ("• " + text) not in parts_list:
+                                    parts_list.append("• " + text)
+                            elif isinstance(child, str):
+                                # Direct text node
+                                text = child.strip()
+                                if text and text not in parts_list:
+                                    parts_list.append(text)
+
+                    extract_text_recursive(actual_content, summary_parts)
+                    summary = " ".join(summary_parts)
+
+                # Fallback: just get all text from the card
+                if not summary:
+                    summary = summary_card.get_text(" ", strip=True)
 
         # Alternative: try the old class name as fallback
         if not summary:
@@ -1098,15 +1178,32 @@ class ApplyBoardScraper(WebScraper):
                 uni_info["location"] = location.get_text(strip=True)
         data["university_info"] = uni_info
 
-        # Other Details (views, fast acceptance, etc.)
-        fast_accept = soup.find("span", class_="css-1wftnvw")
-        if fast_accept:
-            data["fast_acceptance"] = fast_accept.get_text(strip=True)
-        views = soup.find(
-            "p", class_="MuiTypography-root", style=lambda x: x and "color" in x
-        )
-        if views:
-            data["name"] = views.get_text(strip=True)
+        # Program ID / Views count
+        program_id = soup.find("p", class_="MuiTypography-root sc-eCYdqJ dveSWF")
+        if program_id:
+            data["program_id"] = program_id.get_text(strip=True)
+
+        # Extract program features/tags dynamically (Scholarships, Fast Acceptance, etc.)
+        program_features = []
+
+        # Look for the container with the features
+        # The HTML structure has a div.css-ivaslv that contains buttons with features
+        features_container = soup.find("div", class_="css-ivaslv")
+        if features_container:
+            # Find all buttons that contain feature information
+            feature_buttons = features_container.find_all(
+                "button", class_="css-1y8tkjk"
+            )
+
+            for button in feature_buttons:
+                # Each button has a span with class css-1wftnvw containing the feature text
+                feature_span = button.find("span", class_="css-1wftnvw")
+                if feature_span:
+                    feature_text = feature_span.get_text(strip=True)
+                    if feature_text:  # Only add non-empty features
+                        program_features.append(feature_text)
+
+        data["program_features"] = program_features
 
         return data
 
