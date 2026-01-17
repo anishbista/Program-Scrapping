@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from typing import List, Dict, Any
 import time
+import os
+from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -144,6 +146,11 @@ class ApplyBoardScraper(WebScraper):
         self.driver = None
         self.is_logged_in = False
 
+        # Load environment variables
+        load_dotenv()
+        self.email = os.getenv("APPLYBOARD_EMAIL")
+        self.password = os.getenv("APPLYBOARD_PASSWORD")
+
     def setup_driver(self):
         """Setup Selenium WebDriver (tries Firefox first, then Chrome)."""
         if self.driver:
@@ -176,11 +183,11 @@ class ApplyBoardScraper(WebScraper):
 
     def login(self, email: str = None, password: str = None) -> bool:
         """
-        Log in to ApplyBoard using provided credentials.
+        Log in to ApplyBoard using credentials from .env file or provided parameters.
 
         Args:
-            email: User's email (will prompt if not provided)
-            password: User's password (will prompt if not provided)
+            email: User's email (uses .env if not provided)
+            password: User's password (uses .env if not provided)
 
         Returns:
             True if login successful, False otherwise
@@ -189,12 +196,19 @@ class ApplyBoardScraper(WebScraper):
         if not driver:
             return False
 
+        # Use provided credentials or fall back to .env
         if not email:
-            email = input("📧 Enter your ApplyBoard email: ").strip()
+            email = self.email
         if not password:
-            import getpass
+            password = self.password
 
-            password = getpass.getpass("🔒 Enter your password: ").strip()
+        # Validate credentials are available
+        if not email or not password:
+            print("❌ Error: Email or password not found in .env file")
+            print(
+                "Please add APPLYBOARD_EMAIL and APPLYBOARD_PASSWORD to your .env file"
+            )
+            return False
 
         try:
             print("\n🔐 Logging in to ApplyBoard...")
@@ -563,13 +577,13 @@ class ApplyBoardScraper(WebScraper):
             # Wait a bit for the page to stabilize
             time.sleep(2)
 
-            # Expand all program intake sections
+            # Expand all program intake sections and admission requirements
             try:
-                # Find all expand buttons for program intakes (aria-label="show more")
+                # Find all expand buttons (aria-label="show more")
                 expand_buttons = driver.find_elements(
                     By.CSS_SELECTOR, "button[aria-label='show more']"
                 )
-                print(f"   Found {len(expand_buttons)} intake sections to expand...")
+                print(f"   Found {len(expand_buttons)} sections to expand...")
 
                 expanded_count = 0
                 for button in expand_buttons:
@@ -590,9 +604,40 @@ class ApplyBoardScraper(WebScraper):
                         print(f"   Could not click expand button: {e}")
                         continue
 
-                print(f"   ✓ Expanded {expanded_count} intake sections")
+                print(f"   ✓ Expanded {expanded_count} sections")
             except Exception as e:
-                print(f"   ⚠️  Could not expand intake sections: {e}")
+                print(f"   ⚠️  Could not expand sections: {e}")
+
+            # Expand nationality-specific accordion sections in Admission Requirements
+            try:
+                # Find all accordion expand buttons
+                accordion_buttons = driver.find_elements(
+                    By.CSS_SELECTOR, "div.MuiAccordionSummary-root"
+                )
+                print(f"   Found {len(accordion_buttons)} accordion sections...")
+
+                expanded_accordions = 0
+                for button in accordion_buttons:
+                    try:
+                        # Check if it's not already expanded
+                        aria_expanded = button.get_attribute("aria-expanded")
+                        if aria_expanded == "false":
+                            # Scroll to button
+                            driver.execute_script(
+                                "arguments[0].scrollIntoView(true);", button
+                            )
+                            time.sleep(0.3)
+                            # Click the accordion
+                            driver.execute_script("arguments[0].click();", button)
+                            expanded_accordions += 1
+                            time.sleep(0.5)
+                    except Exception as e:
+                        print(f"   Could not expand accordion: {e}")
+                        continue
+
+                print(f"   ✓ Expanded {expanded_accordions} accordion sections")
+            except Exception as e:
+                print(f"   ⚠️  Could not expand accordions: {e}")
 
             # Wait for dynamic content to expand
             time.sleep(2)
@@ -756,14 +801,229 @@ class ApplyBoardScraper(WebScraper):
         requirements = {}
         req_section = soup.find("p", string="Admission Requirements")
         if req_section:
-            req_box = req_section.find_parent("div")
-            if req_box:
-                for p in req_box.find_all("p", class_="MuiTypography-root"):
-                    label = p.get_text(strip=True)
-                    next_div = p.find_next_sibling("div")
-                    if next_div:
-                        value = next_div.get_text(" ", strip=True)
-                        requirements[label] = value
+            # Get the main container - need to go up several levels to get the right container
+            main_container = req_section.find_parent("div", class_="MuiBox-root")
+
+            # Navigate to the actual requirements container
+            # The structure has nested MuiBox-root divs, we need to find the one containing all requirements
+            while main_container and not main_container.find(
+                "p", string=lambda x: x and "Academic Background" in x if x else False
+            ):
+                next_container = main_container.find("div", class_="MuiBox-root")
+                if next_container:
+                    main_container = next_container
+                else:
+                    break
+
+            if main_container:
+                # Extract Academic Background
+                academic_bg = {}
+                academic_section = main_container.find(
+                    "p",
+                    string=lambda x: x and "Academic Background" in x if x else False,
+                )
+                if academic_section:
+                    # Find Minimum Level of Education
+                    min_edu_label = main_container.find(
+                        "p", string="Minimum Level of Education Completed"
+                    )
+                    if min_edu_label:
+                        # Look for the value in the collapse section
+                        collapse = min_edu_label.find_parent("div").find_next(
+                            "div", class_="MuiCollapse-root"
+                        )
+                        if collapse:
+                            edu_value = collapse.find("p", class_="MuiTypography-root")
+                            if edu_value:
+                                academic_bg["minimum_education"] = edu_value.get_text(
+                                    strip=True
+                                )
+
+                    # Find Minimum GPA
+                    min_gpa_label = main_container.find("p", string="Minimum GPA")
+                    if min_gpa_label:
+                        collapse = min_gpa_label.find_parent("div").find_next(
+                            "div", class_="MuiCollapse-root"
+                        )
+                        if collapse:
+                            gpa_value = collapse.find("p", class_="MuiTypography-root")
+                            if gpa_value:
+                                academic_bg["minimum_gpa"] = gpa_value.get_text(
+                                    strip=True
+                                )
+
+                requirements["academic_background"] = academic_bg
+
+                # Extract Language Test Scores
+                language_tests = {}
+                lang_section = main_container.find(
+                    "p", string="Minimum Language Test Scores"
+                )
+                if lang_section:
+                    # Find all language test containers
+                    lang_container = lang_section.find_next("div", class_="MuiBox-root")
+                    if lang_container:
+                        # Find IELTS
+                        ielts_label = lang_container.find("p", string="IELTS")
+                        if ielts_label:
+                            collapse = ielts_label.find_parent("div").find_next(
+                                "div", class_="MuiCollapse-root"
+                            )
+                            if collapse:
+                                ielts_value = collapse.find(
+                                    "p", class_="MuiTypography-root"
+                                )
+                                if ielts_value:
+                                    language_tests["IELTS"] = ielts_value.get_text(
+                                        strip=True
+                                    )
+
+                        # Find TOEFL
+                        toefl_label = lang_container.find("p", string="TOEFL")
+                        if toefl_label:
+                            collapse = toefl_label.find_parent("div").find_next(
+                                "div", class_="MuiCollapse-root"
+                            )
+                            if collapse:
+                                toefl_value = collapse.find(
+                                    "p", class_="MuiTypography-root"
+                                )
+                                if toefl_value:
+                                    language_tests["TOEFL"] = toefl_value.get_text(
+                                        strip=True
+                                    )
+
+                        # Find DUOLINGO
+                        duolingo_label = lang_container.find("p", string="DUOLINGO")
+                        if duolingo_label:
+                            collapse = duolingo_label.find_parent("div").find_next(
+                                "div", class_="MuiCollapse-root"
+                            )
+                            if collapse:
+                                duolingo_value = collapse.find(
+                                    "p", class_="MuiTypography-root"
+                                )
+                                if duolingo_value:
+                                    duolingo_data = {
+                                        "overall": duolingo_value.get_text(strip=True)
+                                    }
+
+                                    # Extract detailed scores (Comprehension, Production, etc.)
+                                    detail_boxes = collapse.find_all(
+                                        "div", class_="MuiBox-root"
+                                    )
+                                    for box in detail_boxes:
+                                        all_p = box.find_all(
+                                            "p", class_="MuiTypography-root"
+                                        )
+                                        if len(all_p) >= 2:
+                                            label = all_p[0].get_text(strip=True)
+                                            value = all_p[1].get_text(strip=True)
+                                            if label in [
+                                                "Comprehension",
+                                                "Production",
+                                                "Conversation",
+                                                "Literacy",
+                                            ]:
+                                                duolingo_data[label.lower()] = value
+
+                                    language_tests["DUOLINGO"] = duolingo_data
+
+                requirements["language_tests"] = language_tests
+
+                # Extract additional requirements (valid test results, nationality-specific)
+                additional_reqs = []
+
+                # Check for "requires valid language test results"
+                valid_test_label = main_container.find(
+                    "p", string="This program requires valid language test results"
+                )
+                if valid_test_label:
+                    collapse = valid_test_label.find_parent("div").find_next(
+                        "div", class_="MuiCollapse-root"
+                    )
+                    if collapse:
+                        test_req_text = collapse.find(
+                            "p", attrs={"data-testid": "allows-for-all-countries"}
+                        )
+                        if test_req_text:
+                            additional_reqs.append(
+                                {
+                                    "type": "valid_test_results",
+                                    "description": test_req_text.get_text(strip=True),
+                                }
+                            )
+
+                # Check for nationality-specific English requirements
+                nationality_label = main_container.find(
+                    "p",
+                    string="This program has nationality specific English requirements",
+                )
+                if nationality_label:
+                    collapse = nationality_label.find_parent("div").find_next(
+                        "div", class_="MuiCollapse-root"
+                    )
+                    if collapse:
+                        # Find the nationality-specific data
+                        nationality_data = {}
+                        ere_info = collapse.find(
+                            "div", attrs={"data-testid": "program-ere-info"}
+                        )
+                        if ere_info:
+                            # Find all accordion sections (one per country)
+                            accordions = ere_info.find_all(
+                                "div", class_="MuiAccordion-root"
+                            )
+                            for accordion in accordions:
+                                # Get country name
+                                summary = accordion.find(
+                                    "div", class_="MuiAccordionSummary-content"
+                                )
+                                if summary:
+                                    country = summary.get_text(strip=True)
+
+                                    # Get the table with test scores
+                                    table = accordion.find(
+                                        "table", class_="MuiTable-root"
+                                    )
+                                    if table:
+                                        country_reqs = []
+                                        rows = table.find("tbody").find_all("tr")
+                                        for row in rows:
+                                            cells = row.find_all(["th", "td"])
+                                            if len(cells) >= 6:
+                                                test_name = cells[0].get_text(
+                                                    strip=True
+                                                )
+                                                test_data = {
+                                                    "test": test_name,
+                                                    "L": cells[1].get_text(strip=True),
+                                                    "R": cells[2].get_text(strip=True),
+                                                    "S": cells[3].get_text(strip=True),
+                                                    "W": cells[4].get_text(strip=True),
+                                                    "O": cells[5].get_text(strip=True),
+                                                }
+                                                country_reqs.append(test_data)
+
+                                        nationality_data[country] = country_reqs
+
+                        if nationality_data:
+                            additional_reqs.append(
+                                {
+                                    "type": "nationality_specific",
+                                    "data": nationality_data,
+                                }
+                            )
+
+                requirements["additional_requirements"] = additional_reqs
+
+                # Extract disclaimer
+                disclaimer = main_container.find(
+                    "p", string=lambda x: x and "do not guarantee admission" in x
+                )
+                if disclaimer:
+                    requirements["disclaimer"] = disclaimer.get_text(strip=True)
+
         data["admission_requirements"] = requirements
 
         # University Info
@@ -975,21 +1235,18 @@ if __name__ == "__main__":
         scraper.close_driver()
         exit(1)
 
-    # Step 5: Login (after collecting URLs)
+    # Step 5: Login (automatically using .env credentials)
     print("\n" + "=" * 50)
     print("🔐 APPLYBOARD LOGIN")
     print("=" * 50)
-    print("ℹ️  Login is recommended for accessing detailed program information")
+    print("ℹ️  Attempting to login using credentials from .env file...")
 
-    login_choice = input("\nDo you want to login? (y/n): ").strip().lower()
-
-    if login_choice == "y":
-        if not scraper.login():
-            print("\n❌ Login failed. Continuing without authentication...")
-            print("Note: Some features may be limited without login.\n")
-            time.sleep(2)
+    if not scraper.login():
+        print("\n❌ Login failed. Continuing without authentication...")
+        print("Note: Some features may be limited without login.\n")
+        time.sleep(2)
     else:
-        print("\n⚠️  Continuing without login. Some features may be limited.\n")
+        print("✅ Successfully logged in!\n")
         time.sleep(1)
 
     # Step 6: Scrape detailed data from each program URL
