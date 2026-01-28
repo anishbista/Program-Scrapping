@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 import time
 import os
+import uuid
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -14,7 +15,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.common.exceptions import TimeoutException
-import csv
 import gzip
 from pathlib import Path
 
@@ -107,7 +107,6 @@ class WebScraper:
 
         output = {
             "scraped_at": datetime.now().isoformat(),
-            "source_url": self.base_url,
             "total_items": len(data),
             "data": data,
         }
@@ -118,46 +117,82 @@ class WebScraper:
         print(f"✓ Data saved to {filename}")
         print(f"✓ Total items scraped: {len(data)}")
 
-    def save_to_csv(self, data: List[Dict[str, Any]], filename: str = None):
+    def save_programs_and_urls_separately(
+        self, programs: List[Dict[str, Any]], base_filename: str
+    ):
         """
-        OPTIMIZED: Save data to CSV for easier analysis.
+        Save program data and URLs in separate files with unique identifiers.
 
         Args:
-            data: List of dictionaries to save
-            filename: Output filename (auto-generated if None)
+            programs: List of program dictionaries
+            base_filename: Base filename (e.g., 'germany_programs_20260128_222757')
         """
-        if not data:
-            return
+        programs_data = []
+        urls_data = []
 
-        if not filename:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"scraped_data_{timestamp}.csv"
+        for program in programs:
+            # Generate unique identifier
+            unique_id = str(uuid.uuid4())
 
-        # Flatten nested dictionaries for CSV
-        flattened_data = []
-        for item in data:
-            flat_item = {}
-            for key, value in item.items():
-                if isinstance(value, dict):
-                    # Flatten nested dict
-                    for sub_key, sub_value in value.items():
-                        flat_item[f"{key}_{sub_key}"] = str(sub_value)
-                elif isinstance(value, list):
-                    # Convert list to JSON string
-                    flat_item[key] = json.dumps(value, ensure_ascii=False)
-                else:
-                    flat_item[key] = value
-            flattened_data.append(flat_item)
+            # Extract URLs from program
+            program_urls = {
+                "id": unique_id,
+                "program_url": program.pop("program_url", None),
+            }
 
-        # Write CSV
-        if flattened_data:
-            keys = flattened_data[0].keys()
-            with open(filename, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=keys)
-                writer.writeheader()
-                writer.writerows(flattened_data)
+            # Extract university URL if exists
+            if "university_info" in program and isinstance(
+                program["university_info"], dict
+            ):
+                program_urls["university_url"] = program["university_info"].pop(
+                    "university_url", None
+                )
 
-            print(f"✓ CSV data saved to {filename}")
+            # Extract scholarship URLs if exist
+            scholarship_urls = []
+            if "scholarships" in program and isinstance(program["scholarships"], list):
+                for scholarship in program["scholarships"]:
+                    if (
+                        isinstance(scholarship, dict)
+                        and "learn_more_url" in scholarship
+                    ):
+                        scholarship_urls.append(scholarship.pop("learn_more_url", None))
+
+            if scholarship_urls:
+                program_urls["scholarship_urls"] = scholarship_urls
+
+            urls_data.append(program_urls)
+
+            # Add unique ID to program data
+            program["id"] = unique_id
+            programs_data.append(program)
+
+        # Save programs data (without URLs)
+        programs_file = f"{base_filename}.json"
+        programs_output = {
+            "scraped_at": datetime.now().isoformat(),
+            "total_items": len(programs_data),
+            "data": programs_data,
+        }
+
+        with open(programs_file, "w", encoding="utf-8") as f:
+            json.dump(programs_output, f, indent=2, ensure_ascii=False)
+
+        # Save URLs data separately
+        urls_file = f"{base_filename}_urls.json"
+        urls_output = {
+            "scraped_at": datetime.now().isoformat(),
+            "total_items": len(urls_data),
+            "data": urls_data,
+        }
+
+        with open(urls_file, "w", encoding="utf-8") as f:
+            json.dump(urls_output, f, indent=2, ensure_ascii=False)
+
+        print(f"✓ Program data saved to {programs_file}")
+        print(f"✓ URLs saved to {urls_file}")
+        print(f"✓ Total items: {len(programs_data)}")
+        print(f"ℹ️  Use the 'id' field to map programs to their URLs")
 
     def run(self, save_file: str = None):
         """
@@ -196,8 +231,7 @@ class ApplyBoardScraper(WebScraper):
         self.email = os.getenv("APPLYBOARD_EMAIL")
         self.password = os.getenv("APPLYBOARD_PASSWORD")
 
-        # Optimization settings
-        self.batch_size = 50  # Save every N programs
+        # Track completed URLs for resume capability
         self.resume_file = "scraper_progress.json"
         self.scraped_urls = set()  # Track completed URLs
 
@@ -1912,12 +1946,6 @@ class ApplyBoardScraper(WebScraper):
             json.dump(progress, f, indent=2, ensure_ascii=False)
         print(f"💾 Progress saved: {len(completed_urls)} programs")
 
-    def save_batch(self, programs: List[Dict], country: str, batch_num: int):
-        """OPTIMIZED: Save data in batches to prevent data loss."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{country}_batch_{batch_num}_{timestamp}.json"
-        self.save_to_json(programs, filename)
-
     def scrape_programs_from_urls(
         self, program_urls: List[str], country: str = "programs"
     ) -> List[Dict[str, Any]]:
@@ -1952,9 +1980,6 @@ class ApplyBoardScraper(WebScraper):
         if not self.driver:
             self.setup_driver()
 
-        batch_programs = []
-        batch_num = len(all_programs) // self.batch_size + 1
-
         # Track failed programs for retry
         failed_programs = {}  # {url: retry_count}
         MAX_RETRIES = 3
@@ -1972,7 +1997,6 @@ class ApplyBoardScraper(WebScraper):
                 program = self.scrape_program_detail_from_url(url)
                 if program and program.get("program_name"):  # Verify we got actual data
                     all_programs.append(program)
-                    batch_programs.append(program)
                     completed_urls.add(url)
                     success = True
 
@@ -2020,16 +2044,12 @@ class ApplyBoardScraper(WebScraper):
                     self.close_driver()
                     self.setup_driver()
 
-            # OPTIMIZED: Save progress periodically
-            if len(batch_programs) >= self.batch_size:
-                print(f"\n💾 Saving batch {batch_num}...")
-                self.save_batch(batch_programs, country, batch_num)
+            # OPTIMIZED: Save progress periodically (every 50 programs)
+            if idx % 50 == 0:
                 self.save_progress(country, all_programs, list(completed_urls))
-                batch_programs = []
-                batch_num += 1
 
                 # OPTIMIZED: Clear browser cache periodically
-                if self.driver and idx % (self.batch_size * 2) == 0:
+                if self.driver:
                     print("🧹 Clearing browser cache...")
                     try:
                         self.driver.delete_all_cookies()
@@ -2059,7 +2079,6 @@ class ApplyBoardScraper(WebScraper):
                     program = self.scrape_program_detail_from_url(url)
                     if program and program.get("program_name"):
                         all_programs.append(program)
-                        batch_programs.append(program)
                         completed_urls.add(url)
 
                         program_name = program.get("university_info", {}).get(
@@ -2123,7 +2142,6 @@ class ApplyBoardScraper(WebScraper):
                         program = self.scrape_program_detail_from_url(url)
                         if program and program.get("program_name"):
                             all_programs.append(program)
-                            batch_programs.append(program)
                             completed_urls.add(url)
 
                             program_name = program.get("university_info", {}).get(
@@ -2163,11 +2181,8 @@ class ApplyBoardScraper(WebScraper):
                         f"   Total completed: {len(all_programs)}/{len(program_urls)}\n"
                     )
 
-        # Save any remaining programs in final batch
-        if batch_programs:
-            print(f"\n💾 Saving final batch...")
-            self.save_batch(batch_programs, country, batch_num)
-            self.save_progress(country, all_programs, list(completed_urls))
+        # Save final progress
+        self.save_progress(country, all_programs, list(completed_urls))
 
         print(
             f"\n✅ Total programs successfully scraped: {len(all_programs)}/{len(program_urls)}"
@@ -2231,22 +2246,16 @@ if __name__ == "__main__":
     programs = scraper.scrape_programs_from_urls(program_urls, country=country_name)
 
     if programs:
-        # Save final consolidated file
+        # Save final consolidated files (programs and URLs separately)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{country_name}_programs_{timestamp}.json"
-        scraper.save_to_json(programs, filename)
-
-        # OPTIMIZED: Also save as CSV for easier analysis
-        csv_filename = f"{country_name}_programs_{timestamp}.csv"
-        try:
-            scraper.save_to_csv(programs, csv_filename)
-        except Exception as e:
-            print(f"⚠️  Could not save CSV: {e}")
+        base_filename = f"{country_name}_programs_{timestamp}"
+        scraper.save_programs_and_urls_separately(programs, base_filename)
 
         print("\n" + "=" * 50)
         print("✅ SCRAPING COMPLETE")
         print("=" * 50)
-        print(f"📁 Data saved to: {filename}")
+        print(f"📁 Program data: {base_filename}.json")
+        print(f"🔗 URLs data: {base_filename}_urls.json")
         print(f"📊 Total programs: {len(programs)}")
 
         # Clean up progress file
