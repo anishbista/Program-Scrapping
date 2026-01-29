@@ -2195,75 +2195,214 @@ if __name__ == "__main__":
     # Create ApplyBoard scraper
     scraper = ApplyBoardScraper()
 
-    # Step 1: Get study destinations
-    countries = scraper.get_study_destinations()
+    # Display main menu
+    print("\n" + "=" * 60)
+    print("🎓 APPLYBOARD PROGRAM SCRAPER")
+    print("=" * 60)
+    print("\nChoose an option:")
+    print("1. Extract programs from URL JSON file (url.json)")
+    print("2. Discover and extract programs from countries")
+    print("=" * 60)
 
-    if not countries:
-        print("❌ Could not fetch study destinations")
-        scraper.close_driver()
-        exit(1)
+    while True:
+        choice = input("\nEnter your choice (1 or 2): ").strip()
+        if choice in ["1", "2"]:
+            break
+        print("❌ Invalid choice. Please enter 1 or 2.")
 
-    # Step 2: Display menu and get user selection
-    selected_country, country_url = scraper.display_country_menu()
+    if choice == "1":
+        # OPTION 1: Load URLs from JSON file
+        print("\n" + "=" * 60)
+        print("📄 LOADING URLS FROM JSON FILE")
+        print("=" * 60)
 
-    if not country_url:
-        print("No country selected. Exiting...")
-        scraper.close_driver()
-        exit(0)
+        url_json_file = "url.json"
+        if not os.path.exists(url_json_file):
+            print(f"❌ Error: {url_json_file} not found!")
+            print(f"Please create a {url_json_file} file with the following format:")
+            print(
+                json.dumps(
+                    {
+                        "urls": [
+                            "https://www.applyboard.com/program-url-1",
+                            "https://www.applyboard.com/program-url-2",
+                        ]
+                    },
+                    indent=2,
+                )
+            )
+            scraper.close_driver()
+            exit(1)
 
-    # Step 3: Get the "Explore more programs" link
-    programs_url = scraper.get_explore_programs_link(country_url)
+        try:
+            with open(url_json_file, "r", encoding="utf-8") as f:
+                url_data = json.load(f)
 
-    if not programs_url:
-        print("❌ Could not find programs link")
-        scraper.close_driver()
-        exit(1)
+            if "urls" not in url_data or not isinstance(url_data["urls"], list):
+                print("❌ Error: JSON file must contain a 'urls' array")
+                scraper.close_driver()
+                exit(1)
 
-    # Step 4: Collect all program URLs (fast, without logging in)
-    program_urls = scraper.collect_program_urls(programs_url)
+            program_urls = url_data["urls"]
+            total_urls = len(program_urls)
 
-    if not program_urls:
-        print("\n❌ No program URLs were collected")
-        scraper.close_driver()
-        exit(1)
+            if total_urls == 0:
+                print("❌ No URLs found in the JSON file")
+                scraper.close_driver()
+                exit(1)
 
-    # Step 5: Login (automatically using .env credentials)
-    print("\n" + "=" * 50)
-    print("🔐 APPLYBOARD LOGIN")
-    print("=" * 50)
-    print("ℹ️  Attempting to login using credentials from .env file...")
+            print(f"✅ Loaded {total_urls} program URLs from {url_json_file}")
 
-    if not scraper.login():
-        print("\n❌ Login failed. Continuing without authentication...")
-        print("Note: Some features may be limited without login.\n")
-        time.sleep(2)
+            # Ask how many programs to extract
+            while True:
+                try:
+                    num_to_extract = (
+                        input(
+                            f"\nHow many programs to extract (1-{total_urls}, or 'all'): "
+                        )
+                        .strip()
+                        .lower()
+                    )
+                    if num_to_extract == "all":
+                        num_to_extract = total_urls
+                        break
+                    num_to_extract = int(num_to_extract)
+                    if 1 <= num_to_extract <= total_urls:
+                        break
+                    print(
+                        f"❌ Please enter a number between 1 and {total_urls}, or 'all'"
+                    )
+                except ValueError:
+                    print("❌ Invalid input. Please enter a number or 'all'")
+
+            # Limit URLs to the number requested
+            program_urls = program_urls[:num_to_extract]
+            print(f"\n📊 Will extract {len(program_urls)} program(s)")
+
+            # Login before scraping
+            print("\n" + "=" * 60)
+            print("🔐 APPLYBOARD LOGIN")
+            print("=" * 60)
+            print("ℹ️  Attempting to login using credentials from .env file...")
+
+            if not scraper.login():
+                print("\n❌ Login failed. Continuing without authentication...")
+                print("Note: Some features may be limited without login.\n")
+                time.sleep(2)
+            else:
+                print("✅ Successfully logged in!\n")
+                time.sleep(1)
+
+            # Scrape programs
+            country_name = "from_json"
+            programs = scraper.scrape_programs_from_urls(
+                program_urls, country=country_name
+            )
+
+            if programs:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                base_filename = f"programs_from_json_{timestamp}"
+                scraper.save_programs_and_urls_separately(programs, base_filename)
+
+                print("\n" + "=" * 60)
+                print("✅ SCRAPING COMPLETE")
+                print("=" * 60)
+                print(f"📁 Program data: {base_filename}.json")
+                print(f"🔗 URLs data: {base_filename}_urls.json")
+                print(f"📊 Total programs extracted: {len(programs)}")
+
+                # Clean up progress file
+                progress_file = f"{country_name}_progress.json"
+                if os.path.exists(progress_file):
+                    os.remove(progress_file)
+                    print("🧹 Cleaned up progress file")
+            else:
+                print("\n❌ No programs were scraped")
+
+        except json.JSONDecodeError as e:
+            print(f"❌ Error parsing JSON file: {e}")
+            scraper.close_driver()
+            exit(1)
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            scraper.close_driver()
+            exit(1)
+
     else:
-        print("✅ Successfully logged in!\n")
-        time.sleep(1)
+        # OPTION 2: Original flow - Discover and extract programs
+        print("\n" + "=" * 60)
+        print("🌍 DISCOVERING PROGRAMS FROM COUNTRIES")
+        print("=" * 60)
 
-    # Step 6: Scrape detailed data from each program URL
-    country_name = selected_country.lower().replace(" ", "_")
-    programs = scraper.scrape_programs_from_urls(program_urls, country=country_name)
+        # Step 1: Get study destinations
+        countries = scraper.get_study_destinations()
 
-    if programs:
-        # Save final consolidated files (programs and URLs separately)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_filename = f"{country_name}_programs_{timestamp}"
-        scraper.save_programs_and_urls_separately(programs, base_filename)
+        if not countries:
+            print("❌ Could not fetch study destinations")
+            scraper.close_driver()
+            exit(1)
 
-        print("\n" + "=" * 50)
-        print("✅ SCRAPING COMPLETE")
-        print("=" * 50)
-        print(f"📁 Program data: {base_filename}.json")
-        print(f"🔗 URLs data: {base_filename}_urls.json")
-        print(f"📊 Total programs: {len(programs)}")
+        # Step 2: Display menu and get user selection
+        selected_country, country_url = scraper.display_country_menu()
 
-        # Clean up progress file
-        progress_file = f"{country_name}_progress.json"
-        if os.path.exists(progress_file):
-            os.remove(progress_file)
-            print("🧹 Cleaned up progress file")
-    else:
-        print("\n❌ No programs were scraped")
+        if not country_url:
+            print("No country selected. Exiting...")
+            scraper.close_driver()
+            exit(0)
+
+        # Step 3: Get the "Explore more programs" link
+        programs_url = scraper.get_explore_programs_link(country_url)
+
+        if not programs_url:
+            print("❌ Could not find programs link")
+            scraper.close_driver()
+            exit(1)
+
+        # Step 4: Collect all program URLs (fast, without logging in)
+        program_urls = scraper.collect_program_urls(programs_url)
+
+        if not program_urls:
+            print("\n❌ No program URLs were collected")
+            scraper.close_driver()
+            exit(1)
+
+        # Step 5: Login (automatically using .env credentials)
+        print("\n" + "=" * 60)
+        print("🔐 APPLYBOARD LOGIN")
+        print("=" * 60)
+        print("ℹ️  Attempting to login using credentials from .env file...")
+
+        if not scraper.login():
+            print("\n❌ Login failed. Continuing without authentication...")
+            print("Note: Some features may be limited without login.\n")
+            time.sleep(2)
+        else:
+            print("✅ Successfully logged in!\n")
+            time.sleep(1)
+
+        # Step 6: Scrape detailed data from each program URL
+        country_name = selected_country.lower().replace(" ", "_")
+        programs = scraper.scrape_programs_from_urls(program_urls, country=country_name)
+
+        if programs:
+            # Save final consolidated files (programs and URLs separately)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_filename = f"{country_name}_programs_{timestamp}"
+            scraper.save_programs_and_urls_separately(programs, base_filename)
+
+            print("\n" + "=" * 60)
+            print("✅ SCRAPING COMPLETE")
+            print("=" * 60)
+            print(f"📁 Program data: {base_filename}.json")
+            print(f"🔗 URLs data: {base_filename}_urls.json")
+            print(f"📊 Total programs: {len(programs)}")
+
+            # Clean up progress file
+            progress_file = f"{country_name}_progress.json"
+            if os.path.exists(progress_file):
+                os.remove(progress_file)
+                print("🧹 Cleaned up progress file")
+        else:
+            print("\n❌ No programs were scraped")
 
     scraper.close_driver()
